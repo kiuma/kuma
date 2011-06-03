@@ -489,7 +489,7 @@ p.h2 {font-size: 1.5em;}</style>
                           :write
                           #'write-some-bytes))))))
 
-(defmethod make-kuma-listener-wirte-some-bytes ((listener kuma-listener))
+(defmethod make-kuma-listener-write-some-bytes ((listener kuma-listener))
   (lambda (fd event exception)
     (declare (ignore event exception))
     (let* ((connection (gethash fd *server-open-connections*))
