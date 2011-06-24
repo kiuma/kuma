@@ -47,8 +47,12 @@
   (let ((val (cl-ppcre:split "\\s" (first header-lines))))
     (list :method (first val) :request-uri (second val) :http-version (third val))))
 
-(defun %parse-headers (header-lines)
-  (let ((headers nil))
+(defun %parse-headers (buffer)
+  (let ((headers nil)
+	(header-lines (cl-ppcre:split "\\r\\n"
+				      (babel:octets-to-string 
+				       buffer
+				       :encoding :ascii))))
     (loop for line in (rest header-lines)
        unless (zerop (length line))
        do (if (or (string-equal line +tab-string+ :end1 1)

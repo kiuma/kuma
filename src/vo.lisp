@@ -44,7 +44,8 @@
 (defgeneric header-slot-multi-value (header slot))
 
 (defclass header ()
-  ((headers :reader header-headers :initform (make-hash-table :test #'equalp))))
+  ((headers :reader header-headers :initarg :headers))
+  (:default-initargs :headers (make-hash-table :test #'equalp)))
 
 (defmethod header-value ((header header) key)
   (gethash (or (and (symbolp key) (symbol-name key)) key)
@@ -189,7 +190,8 @@
    (range :accessor header-range :initform nil)
    (referer :accessor header-referer :initform nil)
    (te :accessor header-te :initform nil)
-   (user-agent :accessor header-user-agent :initform nil)))
+   (user-agent :accessor header-user-agent :initform nil))
+  (:default-initargs :headers nil))
 
 (defmethod header-accept ((header request-header))
   (header-slot-multi-value header 'accept))
@@ -318,7 +320,9 @@
    (read-buffer :accessor connection-read-buffer :initform nil)
    (write-buffer :accessor connection-write-buffer :initform nil)
    (request :reader connection-request :initform (make-instance 'http-request))
-   (response :accessor connection-response :initform nil)))
+   (request-pipeline :accessor connection-request-pipeline :initform (make-instance 'arnesi:queue))
+   (response :accessor connection-response :initform nil)
+   (worker-lock :accessor connection-worker-lock :initform (bt:make-lock))))
 
 (defun create-easy-response-handler (&key uri function)
   (lambda ()
@@ -327,11 +331,65 @@
                               (http-request-location *kuma-request*)))
       function)))
 
+(defgeneric body-stream-handle-buffer (body-stream buffer))
+
+(defclass body-stream (trivial-gray-streams:trivial-gray-stream-mixin)
+  ((stream :reader body-stream-stream :initarg :stream)
+   (chunkingp :reader body-stream-chunking-p :initarg :chunkingp)
+   (compression-method :reader body-stream-compression-method :initarg :compression-method)
+   (buffer-length :reader body-stream-buffer-length :initarg :buffer-length)
+   (buffer-vector :accessor body-stream-buffer-vector :initform nil))
+  (:default-initargs :compression-method nil :buffer-length *default-buffer-size*))
+
+(defmethod initialize-instance :after ((body body-stream) &rest initargs)
+  (declare (ignore initargs))
+  (with-accessors ((stream body-stream-stream)
+                   (buffer body-stream-buffer-vector)
+                   (buffer-length body-stream-buffer-length)
+                   (compression-method body-stream-compression-method))
+      body
+    (let ((curr-buffer (make-array buffer-length :element-type '(unsigned-byte 8)))
+          (bytes-read 0))
+      (setf bytes-read (read-sequence curr-buffer stream)
+            buffer (body-stream-handle-buffer body (subseq curr-buffer 0 bytes-read))))))
+
+(defmethod body-stream-handle-buffer ((body body-stream) buffer)
+  (let* ((method (body-stream-compression-method body))
+         (curr-buffer
+          (cond
+            ((string-equal method "gzip") (salza2:compress-data buffer 'salza2:gzip-compressor))
+            ((string-equal method "deflate") (salza2:compress-data buffer 'salza2:deflate-compressor))
+            (t buffer))))
+    (flexi-streams:make-in-memory-input-stream (concatenate 'vector 
+                                                            (babel:string-to-octets (make-http-line (format nil "~x" (length curr-buffer))) 
+                                                                                    :encoding :ascii)
+                                                            curr-buffer))))
+
+(defmethod stream-read-sequence ((body body-stream) sequence start end &key &allow-other-keys)
+  (declare (ignore start end))
+  
+    (with-accessors ((stream body-stream-stream)
+                     (buffer body-stream-buffer-vector)
+                     (buffer-length body-stream-buffer-length)
+                     (compression-method body-stream-compression-method))
+        body
+      (let ((bytes-read 0))
+        (when buffer
+          (progn (setf bytes-read (read-sequence sequence buffer))
+                 (when (= bytes-read 0)
+                   (let ((curr-buffer (make-array buffer-length :element-type '(unsigned-byte 8)))
+                         (buff-bytes-read 0))
+                     (setf buff-bytes-read (read-sequence curr-buffer stream)
+                           buffer (when (> buff-bytes-read 0) 
+                                    (body-stream-handle-buffer body (subseq curr-buffer 0 buff-bytes-read)))))
+                   (when buffer (setf bytes-read (read-sequence sequence buffer))))))
+        bytes-read)))
+
 (defgeneric complete-response-header (response request))
 
 (defgeneric create-response-header-stream (reader))
 (defgeneric create-response-body-reader (reader))
-(defgeneric read-buffer (reader buffer))
+(defgeneric create-response-stream (reader))
 
 (defclass http-response-reader ()
   ((request :accessor http-response-reader-request :initarg :request)
@@ -341,7 +399,8 @@
    (body-read-p :accessor body-read-p :initform nil)
    (status-line-stream :accessor status-line-stream :initform nil)
    (header-stream :accessor header-stream :initform nil)
-   (body-stream :accessor body-stream :initform nil)))
+   (body-stream :accessor body-stream :initform nil))
+  (:default-initargs :request *kuma-request* :response *kuma-response*))
 
 (defmethod create-response-header-stream ((reader http-response-reader))
   (with-accessors ((response http-response-reader-response) 
@@ -361,6 +420,10 @@
         (body (http-response-body-content response))
         (client-http11-p (string-equal "HTTP/1.1" (http-request-http-version request))))
     (when body
+      (when (and (pathnamep body) (not (fad:file-exists-p body)))
+	(error 'http-not-found-condition))
+      (when (and (pathnamep body) (fad:directory-pathname-p body))
+	(error 'http-forbidden-condition))
       (unless (get-response-param "Content-Type")
         (when (and (pathnamep body) (fad:file-exists-p body) (not (fad:directory-pathname-p body)))
           (let ((content-type (or (get-mime body) "application/octet-stream")))
@@ -376,22 +439,12 @@
                    (not (fad:directory-pathname-p body)))
           (set-response-param "Last-Modified" 
                               (date:universal-time-to-http-date (file-write-date body)))))
-
-      (unless (and (or (get-response-param "Content-Encoding")
-                       (get-response-param "Content-Length"))
-                   (squeezable-p (get-response-param "Content-Type")))
-        (cond
-          ((header-accept-encoding request "gzip") (set-response-param "Content-Encoding" "gzip"))
-          ((header-accept-encoding request "compress") (set-response-param "Content-Encoding" "compress"))
-          ((header-accept-encoding request "deflate") (set-response-param "Content-Encoding" "deflate"))))
-
-      (unless (and (get-response-param "Content-Length")
-                   (or (not (get-response-param "Content-Encoding")) (string-equal "Content-Encoding" "identity"))
-                   (and (pathnamep body) (fad:file-exists-p body) 
-                        (not (fad:directory-pathname-p body))))
-        (set-response-param "Content-Length" (iolib.syscalls:stat-size (iolib.syscalls:stat (namestring body)))))
-      (unless (get-response-param "Accept-Ranges")
-        (set-response-param "Accept-Ranges" "bytes")))))
+      
+      (when (and (pathnamep body) (not (get-response-param "Content-Length")))
+	(set-response-param "Content-Length" (format nil "~a" 
+						     (iolib.syscalls:stat-size 
+						      (iolib.syscalls:stat 
+						       (namestring body)))))))))
 
 (defmethod initialize-instance :after ((reader http-response-reader) &rest initargs)
   (declare (ignore initargs))
@@ -401,38 +454,40 @@
                    (header-stream header-stream)
                    (body-stream body-stream))
       reader
-    (setf status-line-stream (flexi-streams:make-in-memory-input-stream 
-                              (babel:string-to-octets (make-http-line  (status-line response)) 
-                                                      :encoding :ascii))
-          header-stream (create-response-header-stream reader))))
+    (let ((body (http-response-body-content response)))
+      (setf status-line-stream (flexi-streams:make-in-memory-input-stream 
+				(babel:string-to-octets (make-http-line  (status-line response)) 
+							:encoding :ascii))
+	    header-stream (create-response-header-stream reader)
+	    body-stream (typecase body
+			  (string (flexi-streams:make-in-memory-input-stream
+				   (babel:string-to-octets body :encoding :utf8)))
+			  (pathname (open body :element-type '(unsigned-byte 8)))
+			  (t body))))))
 
+(defmethod create-response-stream ((reader http-response-reader))
+  (with-accessors ((status-line-stream status-line-stream)
+                   (header-stream header-stream)
+                   (body-stream body-stream))
+      reader    
+    (apply #'make-concatenated-stream 
+	   (remove-if #'null (list status-line-stream
+				   header-stream
+				   body-stream)))))
 
-(defclass body-stream (trivial-gray-streams:trivial-gray-stream-mixin)
-  ((stream :reader body-stream-stream :initarg :stream)
-   (chunkingp :reader body-stream-chunking-p :initarg :chunkingp)
-   (compression-method :reader body-stream-compression-method :initarg :compression-method)
-   (buffer-length :reader body-stream-buffer-length :initarg :buffer-length)
-   (buffer-vector :accessor body-stream-buffer-vector :initform nil))
-  (:default-initargs :compressionmethod nil :buffer-length *default-buffer-size*))
-
-#|
-(defmethod initialize-instance :after ((body body-stream) &rest initargs)
-  (declare (ignore initargs))
-  (with-accessors ((stream body-stream-stream)
-                   (buffer body-stream-buffer-vector)
-                   (buffer-length body-stream-buffer-length))
-      body
-    (let ((curr-buffer (make-array buffer-length :element-type '(unsigned-byte 8)))
-          (bytes-read 0))
-      (setf bytes-read (read-sequence buffer stream)
-            buffer (subseq buffer 0 bytes-read)))))
-|#
-
-(defmethod read-buffer ((reader http-response-reader) buffer)
-  (with-accessors ((status-line-read-p status-line-read-p)
-                   (header-read-p header-read-p)
-                   (status-line-stream status-line-stream)
-                   (header-stream header-stream))
+(defmethod close ((reader http-response-reader) &key abort)
+  (declare (ignore abort))
+  (with-accessors ((status-line-stream status-line-stream)
+                   (header-stream header-stream)
+                   (body-stream body-stream))
       reader
-    (progn (if (not status-line-read-p)
-               (read-sequence buffer status-line-stream)))))
+    (when status-line-stream (close status-line-stream))
+    (when header-stream (close header-stream))
+    (when body-stream (close body-stream))))
+;; ===================== Internal cache ========================
+
+(defgeneric get-file-from-cache (cache pathname request)
+  (:documentation "Returns the file itself, when it doesn't need to be compressed.
+When compression is requested, checks the availability in cache, when the resource is not found, it creates one."))
+(defclass internal-cache ()
+  ())

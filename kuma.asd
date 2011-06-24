@@ -34,13 +34,14 @@
   :license "Public Domain"
   :author "Andrea Chiumenti"
   :serial t
-  :depends-on (#:iolib #:babel #:cl-ppcre #:split-sequence #:net-telent-date #:flexi-streams #:cl-fad #:salza2 #:trivial-gray-streams)
+  :depends-on (#:iolib #:babel #:cl-ppcre #:split-sequence #:net-telent-date #:flexi-streams #:cl-fad #:salza2 #:trivial-gray-streams #:thread-pool)
   :components ((:module src
                         :components ((:file "package")
                                      (:file "constants" :depends-on ("package"))
+				     (:file "conditions" :depends-on ("constants"))
                                      (:file "global-variables" :depends-on ("package"))
                                      (:file "mime-types" :depends-on ("package"))
-                                     (:file "utils" :depends-on ("constants" "global-variables" "mime-types"))
+                                     (:file "utils" :depends-on ("constants" "global-variables" "mime-types" "conditions"))
                                      (:file "vo" :depends-on ("utils"))
                                      (:file "parsers" :depends-on ("vo"))
                                      (:file "kuma" :depends-on ("parsers"))))))
