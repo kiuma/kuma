@@ -317,7 +317,10 @@
   ((client :reader connection-client :initarg :client)
    (who :reader connection-who :initarg :who)
    (port :reader connection-port :initarg :port)
-   (read-buffer :accessor connection-read-buffer :initform nil)
+   (read-buffer :accessor connection-read-buffer :initform (make-array 65536 
+								       :element-type '(unsigned-byte 8)
+								       :adjustable t))
+   (read-buffer-pointer :accessor connection-read-buffer-pointer :initform 0)
    (write-buffer :accessor connection-write-buffer :initform nil)
    (request :reader connection-request :initform (make-instance 'http-request))
    (request-pipeline :accessor connection-request-pipeline :initform (make-instance 'arnesi:queue))

@@ -92,3 +92,5 @@
                                     +http-gateway-timeout+ +http-http-version-not-supported+))
 
 (define-constant +unix-time-delta+ (encode-universal-time 0 0 0 1 1 1970))
+
+(deftype ub8 () '(unsigned-byte 8))
