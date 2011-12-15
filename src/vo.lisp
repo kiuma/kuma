@@ -31,6 +31,12 @@
 
 (in-package :kuma)
 
+(defgeneric closable-close (closable))
+(defclass closable () ())
+(defmethod closable-close ((closable closable))
+  nil)
+
+
 (defgeneric header-value (header key))
 
 (defgeneric setf-header-value (header key value))
@@ -43,8 +49,15 @@
 
 (defgeneric header-slot-multi-value (header slot))
 
+(defun append-to-array-and-shift (ar item)
+  (let ((ar-length (length ar)))
+    (adjust-array ar (+ 1 ar-length) :initial-element item)
+    (make-array ar-length :element-type (array-element-type ar)
+		:displaced-to ar
+		:displaced-index-offset 1)))
+
 (defclass header ()
-  ((headers :reader header-headers :initarg :headers))
+  ((headers :accessor header-headers :initarg :headers))
   (:default-initargs :headers (make-hash-table :test #'equalp)))
 
 (defmethod header-value ((header header) key)
@@ -70,20 +83,20 @@
   (if (slot-boundp header slot)
       (slot-value header slot)
       (setf (slot-value header slot)
-            (header-value header (intern slot :keyword)))))
+            (header-value header (intern (symbol-name slot) :keyword)))))
 
  (defmethod header-slot-value-as-time ((header header) slot)
   (if (slot-boundp header slot)
       (slot-value header slot)      
       (setf (slot-value header slot)
-            (let ((time-string (header-value header (intern slot :keyword))))
+            (let ((time-string (header-value header (intern (symbol-name slot) :keyword))))
               (and time-string (date:parse-time time-string)))))) 
 
 (defmethod header-slot-value-as-number ((header header) slot)
   (if (slot-boundp header slot)
       (slot-value header slot)      
       (setf (slot-value header slot)
-            (let ((number-string (header-value header (intern slot :keyword))))
+            (let ((number-string (header-value header (intern (symbol-name slot) :keyword))))
               (if number-string 
                   (safe-read-from-string number-string)
                   0)))))
@@ -98,7 +111,6 @@
    (upgrade :accessor header-upgrade)
    (via :accessor header-via)
    (warning :accessor header-warning)))
-
 
 (defmethod header-cache-control ((header general-header))
   (header-slot-value header 'cache-control))
@@ -169,40 +181,45 @@
 (defmethod header-last-modified ((header entity-header))
   (header-slot-value-as-time header 'last-modified))
 
-(defgeneric header-accept-encoding (header encoding))
+(defgeneric header-accept-encoding-p (header encoding))
 
 (defclass request-header (general-header entity-header)
   ((accept :accessor header-accept)
-   (accept-charset :accessor header-accept-charset :initform nil)
-   (accept-encoding)
-   (accept-language :accessor header-accept-language :initform nil)
-   (authorization :accessor header-authorization :initform nil)
-   (expect :accessor header-expect :initform nil)
-   (from :accessor header-from :initform nil)
-   (host :accessor header-host :initform nil)
-   (if-match :accessor header-if-match :initform nil)
-   (if-modified-since :accessor header-if-modified-since :initform nil)
-   (if-none-match :accessor header-if-none-match :initform nil)
-   (if-range :accessor header-if-range :initform nil)
-   (if-unmodified-since :accessor header-if-unmodified-since :initform nil)
-   (max-forwards :accessor header-max-forwards :initform nil)
-   (proxy-authorization :accessor header-proxy-authorization :initform nil)
-   (range :accessor header-range :initform nil)
-   (referer :accessor header-referer :initform nil)
-   (te :accessor header-te :initform nil)
-   (user-agent :accessor header-user-agent :initform nil))
+   (accept-charset :accessor header-accept-charset)
+   (accept-encoding :accessor header-accept-encoding)
+   (accept-language :accessor header-accept-language)
+   (authorization :accessor header-authorization)
+   (expect :accessor header-expect)
+   (from :accessor header-from)
+   (host :accessor header-host)
+   (if-match :accessor header-if-match)
+   (if-modified-since :accessor header-if-modified-since)
+   (if-none-match :accessor header-if-none-match)
+   (if-range :accessor header-if-range)
+   (if-unmodified-since :accessor header-if-unmodified-since)
+   (max-forwards :accessor header-max-forwards)
+   (proxy-authorization :accessor header-proxy-authorization)
+   (range :accessor header-range)
+   (referer :accessor header-referer)
+   (te :accessor header-te)
+   (user-agent :accessor header-user-agent)
+   (method :accessor header-method)
+   (request-uri :accessor header-request-uri)
+   (http-version :accessor header-http-version))
   (:default-initargs :headers nil))
 
 (defmethod header-accept ((header request-header))
   (header-slot-multi-value header 'accept))
 
-(defmethod header-accept-encoding ((header request-header) encoding)
-  (unless (slot-boundp header 'accept-encoding)
-    (setf (slot-value header 'accept-encoding) 
-          (header-slot-multi-value header 'accept-encoding)))
-  (or (string-equal encoding "identity")
-      (member-if (lambda (item) (string-equal encoding item))
-                 (slot-value header 'accept-encoding))))
+(defmethod header-accept-encoding-p ((header request-header) encoding)
+  (let ((encodings (header-accept-encoding header)))
+    (or (string-equal encoding "identity")
+	(member "*" encodings :test #'equal)
+	(member-if (lambda (item) (string-equal encoding item))
+		   encodings))))
+
+(defmethod haeder-accept-encoding ((header request-header))
+  (header-slot-multi-value header 'accept-encoding))
 
 (defmethod header-accept-language ((header request-header))
   (header-slot-multi-value header 'accept-language))
@@ -252,6 +269,15 @@
 (defmethod header-user-agent ((header request-header))
   (header-slot-value header 'user-agent))
 
+(defmethod header-method ((header request-header))
+  (header-slot-value header 'method))
+
+(defmethod header-request-uri ((header request-header))
+  (header-slot-value header 'request-uri))
+
+(defmethod header-http-version ((header request-header))
+  (header-slot-value header 'http-versino))
+
 (defclass response-header (general-header entity-header)
   ((accept-ranges :accessor header-accept-ranges :initform nil)
    (age :accessor header-age :initform nil)
@@ -268,14 +294,28 @@
 (defgeneric http-request-http-version (request))
 (defgeneric http-request-location (request))
 (defgeneric http-request-query-string (request))
+(defgeneric add-post-parameter (request param value))
+(defgeneric add-get-parameter (request param value))
 
-(defclass http-request ()
+(defclass http-request (closable)
   ((requset-line :reader http-request-request-line :initform nil)
    (header :reader http-request-header :initform (make-instance 'request-header))
-   (body-entity :reader http-request-body-entity :initform nil)
+   (body-entity-read-p :reader http-request-body-entity-read-p :initform nil)
    (get-parameters :reader http-request-get-parameters :initform nil)
    (post-parameters :reader http-request-post-parameters :initform nil)
-   (done-p :accessor http-request-done-p :initform nil)))
+   (body-boundary :reader http-request-body-boundary :initform nil)
+   (done-p :accessor http-request-done-p :initform nil)
+   (worker :accessor http-request-worker :initform nil)))
+
+(defmethod add-post-parameter ((request http-request) param value)
+  (with-slots ((params post-parameters))
+      request
+    (setf params (append params (list param value)))))
+
+(defmethod add-get-parameter ((request http-request) param value)
+  (with-slots ((params get-parameters))
+      request
+    (setf params (append params (list param value)))))
 
 (defmethod http-request-method ((request http-request))
   (getf (http-request-request-line request) :method))
@@ -494,3 +534,313 @@
 When compression is requested, checks the availability in cache, when the resource is not found, it creates one."))
 (defclass internal-cache ()
   ())
+
+
+
+;;-------------------------------------- Request worker -----------------------;;
+(defgeneric content-disposition (form-data-header)
+  (:documentation "Returns Content-Disposition of a form-data as a plist like
+\(:dispsition \"form-data\" :name \"par1\" :file-name \"file1.txt\"\)"))
+
+(defgeneric content-type (form-data-header)
+  (:documentation "Returns (when present) Content-Type of a form-data as a plist like
+\(:type \"multipart/mixed\" :boundary \"AaBx12\"\)"))
+
+(defclass form-data-header (header)
+  ((content-disposition :reader content-disposition)
+   (content-type :reader content-type)
+   (content-transfer-encoding :reader content-transfer-encoding)))
+
+(defmethod content-disposition ((header form-data-header))
+  (alexandria:when-let ((disposition (header-slot-value header 'content-disposition)))
+    (let ((disposition-ls (split-sequence:split-sequence #\; disposition)))
+      (append (list :disposition (trim-white-spaces (first disposition-ls)))
+	      (loop for item in (rest disposition-ls)
+		   for match-list = (multiple-value-bind (match scan)
+					(cl-ppcre:scan-to-strings "([^=,\\s]*)=\"?([^\"]*)" item)
+				      (when match
+					(list (intern (string-upcase (aref scan 0)) :keyword) (aref scan 1))))
+		   when match-list
+		   collect (first match-list)
+		   collect (second match-list))))))
+
+(defmethod content-type ((header form-data-header))
+  (let ((disposition (header-slot-value header 'content-type)))
+    (when disposition
+      (let ((disposition-ls (split-sequence:split-sequence #\; disposition)))
+	(append (list :type (trim-white-spaces (first disposition-ls)))
+		(loop for item in (rest disposition-ls)
+		   for match-list = (multiple-value-bind (match scan)
+					(cl-ppcre:scan-to-strings "([^=,\\s]*)=\"?([^\"]*)" item)
+				      (when match
+					(list (intern (string-upcase (aref scan 0)) :keyword) (aref scan 1))))
+		   when match-list
+		   collect (first match-list)
+		   collect (second match-list)))))))
+
+(defmethod content-transfer-encoding ((header form-data-header))
+  (header-slot-value header 'content-transfer-encoding))
+
+(defgeneric worker-read-byte (worker byte))
+
+(defgeneric form-data-read-byte (form-data byte))
+(defgeneric form-data-close (form-data request))
+(defgeneric content-disposition-disposition (form-data))
+(defgeneric content-disposition-name (form-data))
+(defgeneric content-disposition-filename (form-data))
+(defgeneric content-type-type (form-data))
+(defgeneric content-type-charset (form-data))
+(defgeneric content-type-boundary (form-data))
+(defgeneric parse-form-data-value (form-data value-octets))
+
+(defclass form-data ()
+  ((hader :accessor header :initform nil)
+   (content-disposition-disposition :accessor content-disposition-disposition)
+   (content-disposition-name :accessor content-disposition-name)
+   (content-disposition-filename :accessor content-disposition-filename)
+   (content-type-type :accessor content-type-type)
+   (content-type-charset :accessor content-type-charset)
+   (content-type-boundary :accessor content-type-boundary)
+   (content-transfer-encoding :accessor content-transfer-encoding)
+   (fcontent-pathname :accessor fcontent-pathname :initform nil)
+   (fcontent :accessor fcontent :initform nil)
+   (fcontent-buffer :accessor fcontent-buffer :initform (make-array 2
+								    :element-type '(unsigned-byte 8)
+								    :adjustable t))
+   (fcontent-pointer :accessor fcontent-pointer :initform 0)
+   (worker :accessor form-data-worker :initform nil)
+   (read-pointer :accessor read-pointer :initform 0)
+   (read-buffer :accessor read-buffer :initform (make-array 65536
+							    :element-type '(unsigned-byte 8)
+							    :adjustable t))))
+
+(defmethod content-disposition-disposition ((form-data form-data))
+  (if (slot-boundp form-data 'content-disposition-disposition)
+      (slot-value form-data 'content-disposition-disposition)
+      (setf (slot-value form-data 'content-disposition-disposition)
+	    (getf (content-disposition (header form-data)) :disposition))))
+
+(defmethod content-disposition-name ((form-data form-data))
+  (if (slot-boundp form-data 'content-disposition-name)
+      (slot-value form-data 'content-disposition-name)
+      (setf (slot-value form-data 'content-disposition-name)
+	    (getf (content-disposition (header form-data)) :name))))
+
+(defmethod content-disposition-filename ((form-data form-data))
+  (if (slot-boundp form-data 'content-disposition-filename)
+      (slot-value form-data 'content-disposition-filename)
+      (setf (slot-value form-data 'content-disposition-filename)
+	    (getf (content-disposition (header form-data)) :filename))))
+
+(defmethod content-type-type ((form-data form-data))
+  (if (slot-boundp form-data 'content-type-type)
+      (slot-value form-data 'content-type-type)
+      (setf (slot-value form-data 'content-type-type)
+	    (or (getf (content-type (header form-data)) :type)
+		"text/plain"))))
+
+(defmethod content-type-charset ((form-data form-data))
+  (if (slot-boundp form-data 'content-type-charset)
+      (slot-value form-data 'content-type-charset)
+      (setf (slot-value form-data 'content-type-charset)
+	    (or (getf (content-type (header form-data)) :charset)
+		(and (string-equal "text/plain" (content-type-type form-data))
+		     "utf-8")))))
+
+(defmethod content-type-boundary ((form-data form-data))
+  (if (slot-boundp form-data 'content-type-boundary)
+      (slot-value form-data 'content-type-boundary)
+      (setf (slot-value form-data 'content-type-boundary)
+	    (alexandria:when-let ((boundary (getf (content-type (header form-data)) :boundary)))
+	      (babel:string-to-octets boundary :encoding :ascii)))))
+
+(defmethod content-transfer-encoding ((form-data form-data))
+  (content-transfer-encoding (header form-data)))
+
+(defmethod parse-form-data-value ((form-data form-data) value-octets)
+  (format t "~%form data charset ~a ~%" (string-upcase (content-type-charset form-data)))
+  (if (string-equal "text/plain" (content-type-type form-data))
+      (let* ((transfer-encoding (content-transfer-encoding form-data))
+	     (charset (string-upcase (content-type-charset form-data)))
+	     (value (babel:octets-to-string value-octets 
+					    :encoding (alexandria:make-keyword charset))))
+	(cond
+	  ((and (or (string-equal "ascii" charset)
+		    (string-equal "us-ascii" charset)))
+	   (cond
+	     ((string-equal "quoted-printable" transfer-encoding) (%quoted-decode value :attribute-p nil))
+	     ((string-equal "base64" transfer-encoding) (%base64-decode value))
+	     (t (parse-rfc1738-value value))))
+	  (t 
+	   (cond
+	     ((string-equal "quoted-printable" transfer-encoding) (%quoted-decode value :attribute-p nil))
+	     ((string-equal "base64" transfer-encoding) (%base64-decode value))
+	     (t value)))))
+      value-octets))
+
+(defmethod form-data-read-byte ((form-data form-data) byte)
+  (with-accessors ((pointer read-pointer)
+		   (buffer read-buffer)
+		   (header header))
+      form-data
+    (let ((buff-length (length buffer)))
+      (when (= pointer buff-length)
+	(adjust-array buffer (* buff-length 2)))
+      (setf (aref buffer pointer) byte)
+      (incf pointer)
+      
+      (cond
+	((and (not header)
+	      (> pointer 4)
+	      (equalp (subseq buffer (- pointer 4) pointer) +http-header-separator+)) ;;header parser
+	 (setf header (make-instance 'form-data-header))
+	 (let ((parsed-headers (%parse-headers (make-array pointer
+							:element-type '(unsigned-byte 8)
+							:displaced-to buffer) t)))
+	   (loop for (k v) on parsed-headers by #'cddr
+	      do (setf-header-value header k v))
+	   (setf pointer 0)
+	   (format t "~%FORM-DATA header ~a~%" parsed-headers)))
+	((and header
+	      (alexandria:starts-with-subseq "multipart" (content-type-type form-data)))
+	 (with-accessors ((form-data-worker form-data-worker))
+	     form-data
+	   (unless form-data-worker 
+	     (setf form-data-worker 
+		   (make-instance 'multipart-body-woker
+				  :multipart-disposition-name (content-disposition-name form-data))))
+	   (worker-read-byte form-data-worker byte)))
+	((and header 
+	      (string-equal "form-data" (content-disposition-disposition form-data))
+	      (content-disposition-filename form-data)) ;; content-disposition is a file
+	 (progn	   
+	   (if (< (fcontent-pointer form-data) 2)
+	       (progn
+		 (setf (aref (fcontent-buffer form-data) (fcontent-pointer form-data)) byte)
+		 (incf (fcontent-pointer form-data)))
+	       (let ((out-byte (aref (fcontent-buffer form-data) 0)))
+		 (setf (fcontent-buffer form-data)
+		       (append-to-array-and-shift (fcontent-buffer form-data) byte))
+		 (unless (fcontent form-data)
+		   (let ((pathname (merge-pathnames (make-pathname :name (symbol-name (gensym)))
+						    *tmp-path*)))
+		     (setf (fcontent-pathname form-data) pathname
+			   (fcontent form-data) (open pathname
+						      :direction :output
+						      :element-type '(unsigned-byte 8)
+						      :if-exists :supersede
+						      :if-does-not-exist :create))))
+		 (write-byte out-byte (fcontent form-data))
+		 )))))
+      )))
+
+(defmethod form-data-close ((form-data form-data) (request http-request))
+  (cond 
+    ((and (not (content-disposition-filename form-data))
+	  (string-equal "form-data" (content-disposition-disposition form-data)))
+     (alexandria:when-let ((value (parse-form-data-value form-data (subseq (read-buffer form-data)
+									   0
+									   (- (read-pointer form-data) 2)))))
+       (add-post-parameter request
+			   (intern (string-upcase (content-disposition-name form-data)) :keyword)
+			   value)))
+    ;;; add multipart
+    ((content-disposition-filename form-data)
+     (progn
+       (alexandria:when-let ((fcontent (fcontent form-data)))
+	 (close fcontent)
+	 (add-post-parameter request
+			     (intern (string-upcase (content-disposition-name form-data)) :keyword)
+			     (alexandria:when-let ((pathname (fcontent-pathname form-data)))
+			       (list :filename (content-disposition-filename form-data)
+				     :pathname pathname))))))))
+
+(defgeneric boundary-reachedp (worker)
+  (:documentation "Returns a pair of values, first value is T if boundary is met, second value is T
+if it is the last boundary")) 
+
+(defclass multipart-body-woker ()
+  ((boundary :reader http-boundary :initarg :boundary)
+   (http-request :reader http-request :initarg :http-request)
+   (read-pointer :accessor read-pointer :initform 0)
+   (read-buffer-length :reader read-buffer-length)
+   (read-buffer :accessor read-buffer)
+   (multipart-disposition-name :accessor multipart-disposition-name :initarg :multipart-disposition-name)
+   (last-boundary-p :accessor last-boundary-p :initform nil)
+   (form-data :accessor form-data :initform nil))
+  (:default-initargs :multipart-disposition-name nil))
+
+(defmethod initialize-instance :after ((worker multipart-body-woker) &rest initargs)
+  (declare (ignore initargs))
+  (let ((length (+ (length (http-boundary worker)) 4))) ;; "--" + "--|CRLF"
+    (setf (slot-value worker 'read-buffer-length) length
+	  (read-buffer worker) (make-array length
+					   :adjustable t
+					   :element-type '(unsigned-byte 8) 
+					   :initial-element 0))))
+
+(defmethod boundary-reachedp ((worker multipart-body-woker))
+  (let ((read-buffer (read-buffer worker))
+	(pointer (read-pointer worker)))
+    (and (= (read-pointer worker) (read-buffer-length worker))
+	 (if (equalp (http-boundary worker)  
+		     (make-array (length (http-boundary worker)) 
+				 :element-type '(unsigned-byte 8)
+				 :displaced-to read-buffer
+				 :displaced-index-offset 2))
+	     (let ((last-two-bytes (make-array 2
+				    :element-type '(unsigned-byte 8)
+				    :displaced-to read-buffer
+				    :displaced-index-offset (- pointer 2))))
+	       (cond
+		 ((equalp #(13 10) #|CR LF|#
+			  last-two-bytes) 		
+		  (values t nil))
+		 ((equalp #(45 45) #|--|#
+			  last-two-bytes)		
+		  ;;(setf (slot-value (http-request worker) 'body-entity-read-p) t)
+		  (values t t))
+		 (t (progn 
+		      ;;(iolib.syscalls:syslog iolib.syscalls:log-alert "boundary end ~a" last-two-bytes)
+		      (error 'http-bad-request-condition)))))
+	     (values nil nil)))))
+
+(defmethod worker-read-byte ((worker multipart-body-woker) byte)
+  (cond 
+    ((last-boundary-p worker)
+     ;;; receiving last CRLF
+     (if (< (read-pointer worker) 2)
+	 (progn
+	   (incf (read-pointer worker))
+	   t)
+	 nil))
+    ((< (read-pointer worker) (read-buffer-length worker))
+     ;; when buffer is NOT filled
+     (progn
+       (setf (aref (read-buffer worker) (read-pointer worker)) byte)
+       (incf (read-pointer worker))))
+    (t
+     ;; when buffer IS filled we can proceed in evaluating it
+     (multiple-value-bind (boundary-met-p last-boundary-p)
+	 (boundary-reachedp worker)
+       (cond	 
+	 (last-boundary-p 
+	  (progn (alexandria:when-let ((form-data (form-data worker)))
+		   (form-data-close form-data (http-request worker)))
+		 (setf (last-boundary-p worker) t)
+		 t))
+	 ((and boundary-met-p (not last-boundary-p)) 
+	  (progn
+	    (alexandria:when-let ((form-data (form-data worker)))
+	      (form-data-close form-data (http-request worker)))
+	    (setf (form-data worker) (make-instance 'form-data))
+	    (alexandria:when-let ((name (multipart-disposition-name worker)))
+	      (setf (content-disposition-name (form-data worker)) name))
+	    t)))       
+       (let ((out-byte (aref (read-buffer worker) 0))) ;;; getting first byte of the buffer	    
+	 ;; here we shift left the buffer and add byte read to last pos in the buffer
+	 (setf (read-buffer worker) 
+	       (append-to-array-and-shift (read-buffer worker) byte)) 	   
+	 (alexandria:when-let ((form-data (form-data worker)))
+	   (form-data-read-byte form-data out-byte))
+	 t)))))

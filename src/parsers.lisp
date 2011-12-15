@@ -31,8 +31,6 @@
 
 (in-package :kuma)
 
-(defparameter +tab-string+ (format nil "~a" #\Tab))
-
 (defun safe-read-from-string (string)
   (let ((*read-eval* nil))
     (read-from-string string)))
@@ -43,37 +41,43 @@
 (defun %parse-header-value (string)
   (trim-white-spaces string))
 
-(defun %parse-http-message (header-lines)
-  (let ((val (cl-ppcre:split "\\s" (first header-lines))))
-    (list :method (first val) :request-uri (second val) :http-version (third val))))
+(defun %parse-http-message (header-line)
+  (let ((val (cl-ppcre:split "\\s" header-line)))
+    (list "method" (first val) "request-uri" (second val) "http-version" (third val))))
 
-(defun %parse-headers (buffer)
+(defun %parse-headers (buffer &optional (form-data-p nil))
+  (format t "Parsing headers")
   (let ((headers nil)
 	(header-lines (cl-ppcre:split "\\r\\n"
 				      (babel:octets-to-string 
 				       buffer
 				       :encoding :ascii))))
-    (loop for line in (rest header-lines)
+    (unless form-data-p
+      (setf headers (%parse-http-message (first header-lines))))
+    (loop for line in (or (and form-data-p header-lines) 
+			  (rest header-lines))
        unless (zerop (length line))
-       do (if (or (string-equal line +tab-string+ :end1 1)
-                  (string-equal line "" :end1 1))
+       do (if (cl-ppcre:all-matches "^\\s" line)
               (when (not (null headers))
                 (nconc (first headers) (%parse-header-value line))) 
               (multiple-value-bind (ignore strings)
                   (cl-ppcre:scan-to-strings  
-                   "([\\#,\\$,\\&,\\',\\*,\\+,\\-,\\.,0-9,A-Z,\\^,\\_,\\`,a-z,\\|\\~]*:)(.*)" 
+                   "([\\#\\$\\&\\'\\*\\+\\-\\.0-9A-Za-z\\^\\_\\`\\|\\~]*:)(.*)" 
                    line)
                 (declare (ignore ignore))
                 (setf strings (coerce strings 'list))
                 (when (first strings)
-                  (push (subseq (first strings) 0 (- (length (first strings)) 1)) headers)
-                  (push (%parse-header-value (second strings)) headers)))))
-    (reverse headers)))
+		  (if headers
+		      (nconc headers (list (subseq (first strings) 0 (- (length (first strings)) 1))
+					   (%parse-header-value (second strings))))
+		      (setf headers (list (subseq (first strings) 0 (- (length (first strings)) 1))
+					  (%parse-header-value (second strings)))))))))
+    headers))
 
 (defun %parse-multi-value (string)
   (let ((values (split-sequence:split-sequence #\, string))
-        (regex "([^;]*)(;q=)([0-9]+(\.[0-9]+))"))
-    (map 'list #'first 
+        (regex "([^;]*)(;\\s*q\\s*=\\s*)([0-9]+(\.[0-9]+)?)"))
+    (map 'list #'(lambda (str) (trim-white-spaces (first str))) 
          (sort (loop for val in values
                   when val
                   collect (list (cl-ppcre:regex-replace-all regex val "\\1")
@@ -83,3 +87,69 @@
                                       (safe-read-from-string quality)
                                       1))))
                (lambda (a b) (> (second a) (second b)))))))
+
+(defun parse-rfc1738-value (item)
+  (let ((regex-list (list "(%)([0-9,a-f,A-F]{2})" "(&#)([\\d]*)(;)")))
+    (second (mapcar #'(lambda (regex) 
+			(cl-ppcre:regex-replace-all regex item
+						    (lambda (target-string start end match-start match-end reg-starts reg-ends)
+						      (declare (ignore start end match-start match-end)) 
+						      (string (code-char (parse-integer 
+									  (subseq target-string 
+										  (aref reg-starts 1) 
+										  (aref reg-ends 1))))))))
+		    regex-list))))
+
+(defun parse-rfc1738-key-value (key-value)
+  (loop for item in (cl-ppcre:split "=" key-value)
+       collect (parse-rfc1738-value item)))
+
+(defun parse-rfc1738 (string)
+  (loop for key-value in (cl-ppcre:split "&" string)
+       collect (parse-rfc1738-key-value key-value)))
+
+
+(defun make-x-www-form-urlencoded-hash-table (k-v-list)
+  (let ((ht (make-hash-table)))
+    (mapcar #'(lambda (x) (let ((key (alexandria:make-keyword (string-upcase (first x))))) 
+			    (setf (gethash key ht)
+				  (cons (second x) 
+					(gethash key ht)))))
+	    k-v-list)
+    (loop for k being the hash-keys in ht using (hash-value v)
+	 do (setf (gethash k ht) (reverse v))
+       finally (return ht))))
+
+(defun boundary (content-type)
+  (let ((regex (cl-ppcre:create-scanner "(multipart/form-data\\s*\\;\\s*)(boundary\\s*=\\s*)(\\S*)" :case-insensitive-mode t)))
+    (multiple-value-bind (replacement matched)
+	  (cl-ppcre:regex-replace-all regex content-type "\\3")
+      (and matched replacement))))
+
+(defun %quoted-char-decode (char-code &key (external-format :utf-8))
+  (let ((l (if (listp char-code) char-code (list char-code))))
+    (format nil "~a" (octets-to-string (coerce l '(vector (unsigned-byte 8))) 
+				       :external-format (if (stringp external-format) 
+							    (intern (string-upcase external-format) :keyword)
+							    external-format)))))
+
+(defun %quoted-decode (string &key (external-format :utf-8) (attribute-p t))
+  (let ((sentence (or (and attribute-p (cl-ppcre:regex-replace-all "_" string " "))
+                      (cl-ppcre:regex-replace-all "=\\n" string ""))))
+    (cl-ppcre:regex-replace-all "(=[0-9,A-F]{2})+"
+                                sentence
+                                #'(lambda (match register)
+                                    (declare (ignore register))
+                                    (%quoted-char-decode 
+                                     (loop for i from 0 below (length match) by 3
+                                        collect (parse-integer (subseq match (+ i 1) (+ i 3)) :radix 16))
+                                     :external-format external-format))
+                                :simple-calls t)))
+
+(defun %base64-decode (string &key (external-format :utf-8))
+  (if external-format
+      (octets-to-string (base64:base64-string-to-usb8-array string) 
+			:external-format (if (stringp external-format) 
+					     (intern (string-upcase external-format) :keyword)
+					     external-format))
+      (base64:base64-string-to-usb8-array string)))

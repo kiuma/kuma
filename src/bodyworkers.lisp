@@ -1,5 +1,5 @@
 ;;; -*- lisp -*-
-;;; $Header: kuma.asd $
+;;; $Header: bodyworkers.lisp $
 
 ;;; Copyright (c) 2011, Andrea Chiumenti.  All rights reserved.
 
@@ -29,33 +29,28 @@
 
 
 
-(asdf:defsystem #:kuma
-  :version "0.1"
-  :license "Public Domain"
-  :author "Andrea Chiumenti"
-  :serial t
-  :depends-on (#:iolib 
-	       #:babel 
-	       #:cl-ppcre 
-	       #:split-sequence 
-	       #:net-telent-date 
-	       #:flexi-streams 
-	       #:cl-fad 
-	       #:salza2 
-	       #:trivial-gray-streams 
-	       #:thread-pool
-	       #:alexandria
-	       #:cl-base64)
-  :components ((:module src
-                        :components ((:file "package")
-                                     (:file "constants" :depends-on ("package"))
-				     (:file "conditions" :depends-on ("constants"))
-                                     (:file "global-variables" :depends-on ("package"))
-                                     (:file "mime-types" :depends-on ("package"))
-                                     (:file "utils" :depends-on ("constants" "global-variables" "mime-types" "conditions"))
-                                     
-                                     (:file "parsers" :depends-on ("utils"))
-				     (:file "vo" :depends-on ("utils" "parsers"))
-				     (:file "bodyworkers" :depends-on ("parsers"))
-                                     (:file "kuma" :depends-on ("parsers" "bodyworkers"))))))
+(in-package :kuma)
 
+(defun make-x-www-form-urlencoded-function (connection size)
+  (lambda (read-buf bytes-read)
+    (unless (zerop bytes-read)
+      (if (< (connection-read-buffer-pointer connection) size)
+	  (progn
+	    (incf (connection-read-buffer-pointer connection))
+	    (when (> (connection-read-buffer-pointer connection)
+		     (length (connection-read-buffer connection)))
+	      (adjust-array (connection-read-buffer connection) 
+			    (* (length (connection-read-buffer connection)) 2)))
+	    (setf (aref (connection-read-buffer connection)
+			(- (connection-read-buffer-pointer connection) 1))
+		  (aref read-buf 0))
+	    nil)
+	  (progn
+	    (setf (http-request-post-parameters (connection-request connection))
+		  (make-x-www-form-urlencoded-hash-table (parse-rfc1738 
+							  (babel:octets-to-string 
+							   (make-array size 
+								       :element-type '(unsigned-byte 8)
+								       :displaced-to (connection-read-buffer connection))
+							   :encoding :ascii))))
+	    t)))))

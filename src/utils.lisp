@@ -30,6 +30,18 @@
 
 (in-package :kuma)
 
+(defvar *tmp-path* (make-pathname :directory '(:absolute "tmp")))
+
+(defparameter +crlf+ (babel:string-to-octets
+		      (format nil "~a~a" #\Return #\Linefeed)
+		      :encoding :ascii))
+
+(defparameter +http-header-separator+ (babel:string-to-octets
+                                       (format nil "~a~a~a~a" #\Return #\Linefeed #\Return #\Linefeed)
+                                       :encoding :ascii))
+
+(defparameter +tab-string+ (format nil "~a" #\Tab))
+
 (defun make-http-line (string)
   (format nil "~a~a~a" string #\Return #\Newline))
 
