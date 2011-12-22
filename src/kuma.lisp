@@ -35,9 +35,6 @@
 
 ;;; setup a multiplexer
 
-(defvar *removeme* nil)
-(defvar *removeme2* nil)
-
 (defvar *max-bytes* (* 1024 64))
 (defconstant +read-timeout+ 10)
 (defconstant +write-timeout+ 10)
@@ -49,6 +46,11 @@
 
 ;;; ==================================================================================
 (defvar *kuma-server* nil)
+;(shadow 'funcall)
+;(defgeneric funcall (f &rest args) (:method (f &rest args) (apply 'cl:funcall f args)))
+
+(defgeneric kuma-server-error-handler (server))
+(defgeneric (setf kuma-server-error-handler) (error-handler server))
 
 (defgeneric kuma-listener-run (listener))
 (defgeneric kuma-listener-run-helper (listener))
@@ -58,15 +60,13 @@
 
 (defgeneric make-kuma-listener-disconnector (listener socket))
 
-(defgeneric kuma-listener-error-handler (listener fd http-error))
-
 (defun make-request-header-worker ()
   (lambda (connection buffer buffer-length)
     (let* ((http-request (connection-request connection))
 	   (header (http-request-header http-request))
 	   (header-headers (header-headers header)))
-      (if (not header-headers)	  
-	  (progn	    
+      (if (not header-headers)
+	  (progn
 	    (when (and (> buffer-length 4)
 		       (equalp (subseq buffer (- buffer-length 4) buffer-length)
 			       +http-header-separator+))
@@ -78,14 +78,13 @@
 							       :element-type '(unsigned-byte 8)
 							       :displaced-to buffer)) by #'cddr
 		     do (setf-header-value header k v))
-		(setf (slot-value http-request 'body-boundary) 
-		      (alexandria:when-let 
-			  ((b (boundary (header-content-type 
+		(setf (slot-value http-request 'body-boundary)
+		      (alexandria:when-let
+			  ((b (boundary (header-content-type
 					 (http-request-header request)))))
-			(babel:string-to-octets b :encoding :ascii))	     
+			(babel:string-to-octets b :encoding :ascii))
 		      (connection-read-buffer-pointer connection) 0)
 		(alexandria:when-let ((expect (header-expect request-header)))
-		  ;;(format t "Expect is: ~a~%" expect)
 		  (if (string-equal expect "100-continue")
 		      (let ((continue
 			     (babel:string-to-octets (make-http-line
@@ -101,7 +100,7 @@
 		  ;;; process response
 		  )))
 	    t)
-	  (progn 
+	  (progn
 	    ;;(iolib.syscalls:syslog iolib.syscalls:log-alert "byte read ~a" "header-worker FINISH")
 	    nil)))))
 
@@ -109,30 +108,19 @@
   (lambda (connection buffer buffer-length)
     (let* ((http-request (connection-request connection))
 	   (header (http-request-header http-request))
-	   ;;(header-headers (header-headers header))
 	   (content-length (header-content-length header)))
-      (if (and (string-equal (header-content-type header) "application/x-www-form-urlencoded")
+      (when (and (string-equal (header-content-type header) "application/x-www-form-urlencoded")
 	       (not (http-request-body-entity-read-p (connection-request connection))))
-	  (progn 
-	    ;;(iolib.syscalls:syslog iolib.syscalls:log-alert "byte read ~a" "urlencoded-body-worker")
-	    (if (>= (connection-read-buffer-pointer connection) content-length)
-		(progn
-		  
-
-		  (setf (slot-value http-request 'post-parameters) (parse-rfc1738 (babel:octets-to-string 
-										   (make-array buffer-length
-											       :element-type '(unsigned-byte 8)
-											       :displaced-to buffer)
-										   :encoding :acii)) 
-			(slot-value http-request 'body-entity-read-p) t
-			(connection-read-buffer-pointer connection) 0)
-		;;; process response
-		  )
-		t))
-	    
-	  (progn 
-	    ;;(iolib.syscalls:syslog iolib.syscalls:log-alert "byte read ~a" "urlencoded-body-worker FINISH")
-	    nil)))))
+	  (if (>= (connection-read-buffer-pointer connection) content-length)
+	      (progn
+		(setf (slot-value http-request 'post-parameters) (parse-rfc1738 (babel:octets-to-string
+										 (make-array buffer-length
+											     :element-type '(unsigned-byte 8)
+											     :displaced-to buffer)
+										 :encoding :utf-8))
+		      (slot-value http-request 'body-entity-read-p) t)
+		nil)
+	      t)))))
 
 
 ;;;; imcomplete
@@ -141,21 +129,56 @@
     (declare (ignore buffer-length))
     (let* ((http-request (connection-request connection))
 	   (boundary (http-request-body-boundary http-request))
-	   (worker (and boundary 
-			(or (http-request-worker http-request) 
-			    (setf (http-request-worker http-request) 
-				  (make-instance 'multipart-body-woker 
+	   (worker (and boundary
+			(or (http-request-worker http-request)
+			    (setf (http-request-worker http-request)
+				  (make-instance 'multipart-body-woker
 						 :http-request http-request
 						 :boundary boundary))))))
       (if (and boundary
 	       (not (http-request-body-entity-read-p http-request)))
-	  (progn 
+	  (progn
 	    ;;(iolib.syscalls:syslog iolib.syscalls:log-alert "byte read ~a" "multipart-body-worker")
 	    (setf (connection-read-buffer-pointer connection) 0)
-	    (worker-read-byte worker (aref buffer 0)))	    
-	  (progn 
+	    (worker-read-byte worker (aref buffer 0)))
+	  (progn
 	    ;;(iolib.syscalls:syslog iolib.syscalls:log-alert "byte read ~a" "multipart-body-worker FINISH")
 	    nil)))))
+
+(defclass worker-callable (callable)
+  ((connection :accessor callable-connection :initarg :connection)
+   (request :accessor callable-request :initarg :request)
+   (response :accessor callable-response :initarg :response)
+   ;(handler-func :accessor callable-handler-func :initarg :handler-func)
+   (listener :accessor callable-listener :initarg :listener)
+   (server :accessor callable-server :initarg :server)
+   (fd :accessor callable-fd :initarg :fd)))
+
+(defmethod callable-call ((callable worker-callable))
+  (declare (ignore rest))
+  (let* ((*kuma-connection* (callable-connection callable))
+	 (*kuma-request* (callable-request callable))
+	 (*kuma-response* (callable-response callable))
+	 (*kuma-server* (callable-server callable))
+	 (error-handler (kuma-server-error-handler *kuma-server*))
+	 (worker-lock (connection-worker-lock *kuma-connection*)))
+    (progn
+      (handler-case
+	  (let ((call-result (funcall (callable-handler-func callable))))
+	    (setf (http-response-body-content *kuma-response*) call-result))
+	(error (e)
+	  (print e)
+	  (let* ((http-error +http-internal-server-error+)
+		 (call-result (funcall (callable-handler-func callable) http-error)))
+	    (setf (http-response-body-content *kuma-response*) call-result))))    
+      (bt:with-lock-held (worker-lock)
+	(arnesi:enqueue (connection-request-pipeline *kuma-connection*)
+			(make-instance 'http-response-reader
+				       :request *kuma-request*
+				       :response *kuma-response*)))
+      (funcall (kuma-listener-write-some-bytes (callable-listener callable))
+	       (callable-fd callable) 
+	       :write nil))))
 
 (defclass kuma-listener ()
   ((server :reader kuma-server :initarg :server)
@@ -166,7 +189,9 @@
    (max-backlog :reader kuma-listener-max-backlog :initarg :max-backlog)
    (read-some-bytes :reader kuma-listener-read-some-bytes)
    (write-some-bytes :reader kuma-listener-write-some-bytes)
-   (reader-workers :accessor kuma-listener-reader-workers))
+   (reader-workers :accessor kuma-listener-reader-workers)
+   (write-buffer :accessor kuma-listener-write-buffer 
+		 :initform (make-array *default-buffer-size* :element-type '(unsigned-byte 8))))
   (:default-initargs :bind-address +ipv4-unspecified+
     :max-backlog *default-backlog-size*))
 
@@ -174,76 +199,10 @@
   (declare (ignore initargs))
   (setf (slot-value listener 'read-some-bytes) (make-kuma-listener-read-some-bytes listener)
 	(slot-value listener 'write-some-bytes) (make-kuma-listener-write-some-bytes listener)
-	(slot-value listener 'reader-workers) (list 
+	(slot-value listener 'reader-workers) (list
 					       (make-request-header-worker)
 					       (make-request-urlencoded-body-worker)
 					       (make-request-multipart-body-worker))))
-
-#|
-(defmethod kuma-listener-error-handler ((listener kuma-listener) fd http-error)
-  (let* ((connection (gethash fd (kuma-open-connections listener)))
-         ;(who (connection-who connection))
-         ;(port (connection-port connection))
-         ;(socket (connection-client connection))
-         (*kuma-request* (connection-request connection))
-         (*kuma-response* (setf (connection-response connection) (make-instance 'http-response))))
-
-    (setf (status-line) http-error)
-    (let ((error-code (second (http-response-status-line *kuma-response*)))
-          (reason (third (http-response-status-line *kuma-response*))))
-      (setf (response-body)
-            (format nil
-                    "<html>
-<head>
-  <title>Error ~a</title>
-  <style>body {
-  font-family: arial, elvetica;
-  font-size: 7pt;
-}
-span.blue {
-  padding: 0 3px;
-  background-color: #525D76;
-  color: white;
-  font-weight: bolder;
-  margin-right: .25em;
-}
-p.h1, p.h2 {
-  padding: 0 3px;
-  background-color: #525D76;
-  color: white;
-  font-weight: bolder;
-  font-size: 2em;
-  margin: 0;
-  margin-bottom: .5em;
-}
-p.h2 {font-size: 1.5em;}</style>
-</head>
-<body>
-  <p>
-    <p class='h1'>
-      HTTP Status ~a - ~a
-    </p>
-
-    <hr noshade='noshade'>
-    <p>
-      <span class='blue'>url</span>
-      ~a
-    </p>
-    <hr noshade='noshade'>
-    <p class='h2'>
-      ~a at ~a
-    </p>
-  </p>
-
-</body>
-</html>"
-                    error-code
-                    error-code
-                    reason
-                    (http-request-uri *kuma-request*)
-                    (kuma-server-name *kuma-server*)
-                    (get-request-param "Host"))))))
-|#
 
 (defmethod kuma-listener-run ((listener kuma-listener))
   (unwind-protect
@@ -333,26 +292,41 @@ p.h2 {font-size: 1.5em;}</style>
 (defmethod make-kuma-listener-write-some-bytes ((listener kuma-listener))
   (lambda (fd event exception)
     (declare (ignore event exception))
+    (format t "---- calling make-kuma-listener-write-some-bytes -----~%")
     (let* ((*kuma-connection* (gethash fd (kuma-open-connections listener)))
-	   (*kuma-server* (kuma-server listener)))
+	   (*kuma-server* (kuma-server listener))
+	   (seq-buffer (kuma-listener-write-buffer listener)))
       (with-accessors ((who connection-who)
 		       (port connection-port)
 		       (socket connection-client)
 		       (request connection-request)
-		       (write-buffer connection-write-buffer))
+		       (pipeline connection-request-pipeline)
+		       (write-buffer connection-write-buffer)
+		       (response-reader connection-response-reader)
+		       (worker-lock connection-worker-lock))
 	  *kuma-connection*
-	(if write-buffer
-	    (handler-case ;; TODO close  response
-		(let ((ch (read-byte write-buffer)))
+	(unless response-reader
+	  (bt:with-lock-held (worker-lock)
+	    (setf response-reader (arnesi:dequeue pipeline))
+	    (when response-reader
+	      (setf write-buffer (create-response-stream response-reader)))))
+	(if (and response-reader write-buffer)
+	  (progn
+	    (let ((bytes-read (read-sequence seq-buffer write-buffer)))	      
+	      (if (> bytes-read 0)
 		  (handler-case ;; TODO close response
-		      (send-to socket
-			       (make-array 1 :element-type 'unsigned-byte :initial-element ch)
-			       :start 0
-			       :end 1)
+		      (progn 
+			(send-to socket
+				 seq-buffer
+				 :end bytes-read)
+			(funcall (kuma-listener-write-some-bytes listener)
+				 fd
+				 :write nil))
 		    (socket-connection-reset-error ()
 		      ;; If for somer eaon the client reset the network connection,
 		      ;; we'll get this signal.
-		      (closable-close request)
+		      (closable-close response-reader)
+		      (setf response-reader nil)
 		      (funcall (make-kuma-listener-disconnector listener socket) who port :close))
 		    (isys:ewouldblock ()
 		      ;; Sometimes this happens on a write even though it
@@ -365,27 +339,22 @@ p.h2 {font-size: 1.5em;}</style>
 		      ;; In this server, if the client doesn't accept data,
 		      ;; it also means it will never send us data again. So
 		      ;; close the connection for good.
-		      (closable-close request)
+		      (closable-close response-reader)
+		      (setf response-reader nil)
 		      (funcall (make-kuma-listener-disconnector listener socket) who port :close))
 		    (end-of-file ()
-		      (closable-close request)
-		      (funcall (make-kuma-listener-disconnector listener socket) who port :close))))
-	      (end-of-file ()
-		(closable-close request)
-		(with-accessors  ((http-response-reader connection-response)
-				  (worker-lock connection-worker-lock)
-				  (pipeline connection-request-pipeline)
-				  (connection-write-buffer connection-write-buffer))
-		    *kuma-connection*
-		  (close http-response-reader)
-		  (bt:with-lock-held (worker-lock)
-		     (setf http-response-reader (arnesi:dequeue pipeline)))
-		  (if http-response-reader
-		      (progn
-			(setf connection-write-buffer (create-response-stream *kuma-connection*))
-			(funcall (kuma-listener-write-some-bytes listener) fd :write nil))
-		      (funcall (make-kuma-listener-disconnector listener socket) who port :write)))))
-	    (funcall (make-kuma-listener-disconnector listener socket) who port :write))))))
+		      (closable-close response-reader)
+		      (setf response-reader nil)
+		      (funcall (make-kuma-listener-disconnector listener socket)
+			       who port :close)))
+		  (progn
+		    (closable-close response-reader)
+		    (setf response-reader nil)))))
+	  (progn
+	    (when response-reader
+	      (closable-close response-reader)
+	      (setf response-reader nil))
+	    (funcall (make-kuma-listener-disconnector listener socket) who port :write)))))))
 
 (defmethod make-kuma-listener-read-some-bytes ((listener kuma-listener))
   (let ((read-buf (make-array *max-bytes* :element-type 'unsigned-byte)))
@@ -410,53 +379,72 @@ p.h2 {font-size: 1.5em;}</style>
 	      ;; around and signal that condition so our
 	      ;; handler-case can deal with it properly like our
 	      ;; other examples.
-	      (unless (zerop bytes-read)	      
+	      (unless (zerop bytes-read)
 		(dotimes (i bytes-read)
-		  ;;(format t (babel:octets-to-string (coerce buf '(vector (unsigned-byte 8))) :encoding :utf-8))
-		  ;;(setf *removeme* (append *removeme* (coerce buf 'list)))
 		  (incf (connection-read-buffer-pointer connection))
 		  (when (> (connection-read-buffer-pointer connection)
 			   (length (connection-read-buffer connection)))
-		    (adjust-array (connection-read-buffer connection) 
+		    (adjust-array (connection-read-buffer connection)
 				  (* (length (connection-read-buffer connection)) 2)))
 		  (setf (aref (connection-read-buffer connection)
 			      (- (connection-read-buffer-pointer connection) 1))
-			(aref read-buf i))                  
+			(aref read-buf i))
                   (let ((current-buffer (connection-read-buffer connection))
 			(current-buffer-length (connection-read-buffer-pointer connection)))
-		    
+
 		    (unless (loop for worker in (kuma-listener-reader-workers listener)
-			       when (funcall worker connection current-buffer current-buffer-length) 
+			       when (funcall worker connection current-buffer current-buffer-length)
 			       return t)
-		      ;;(format t "~%last bytes read \(~d\): ~a~%" bytes-read buf)
-		      (setf *removeme2* (append *removeme2* (coerce buf 'list)))
-		      (format t "~%POST parameters: ~a~%" (http-request-post-parameters 
+		      (format t "~%POST parameters: ~a~%" (http-request-post-parameters
 							   http-request))
-		      (format t "~%GET parameters: ~a~%" (http-request-get-parameters 
-							  http-request)))
-		    
-		    ))))
+		      (format t "~%GET parameters: ~a~%" (http-request-get-parameters
+							  http-request))
+
+		      (setf (connection-read-buffer-pointer connection) 0
+			    (connection-request connection) (make-instance 'http-request))
+		      (kuma-server-process-response listener connection http-request fd))))))
 
 	  (socket-connection-reset-error ()
 	    ;; Handle the client sending a reset.
 	    (let* ()
 	      (format t "Client ~A:~A: connection reset by peer.~%" who port)
-	      (closable-close request)
+	      (closable-close http-request)
 	      (funcall (make-kuma-listener-disconnector listener socket) who port :close)))
 	  (end-of-file ()
-
 	    (format t "read eof~%")
-	    (closable-close request)
-	    (funcall (make-kuma-listener-disconnector listener socket) who port :close)
-	    #|
-	    (setf (connection-write-buffer connection)
-	    (babel:string-to-octets
-	    (format nil "~%Request:~%~a~%Reply:~%~a~%END~%"
-	    (babel:octets-to-string (connection-read-buffer connection))
-	    *test-string*)))
-	    (write-some-bytes fd :write nil)
-	    |#
-	    ))))))
+	    (closable-close http-request)
+	    (funcall (make-kuma-listener-disconnector listener socket) who port :close)))))))
+
+(defmethod kuma-server-process-response ((listener kuma-listener) connection request fd)
+  (let ((server (kuma-server listener)))
+    (with-accessors ((handlers kuma-server-handlers)
+		     (error-handler kuma-server-error-handler)
+		     (server-pool kuma-server-threads))
+	server
+      (let ((handler (loop for handler in handlers
+			for result = (funcall (response-handler-condition handler) handler)
+			when result
+			return handler))
+	    (handler-func nil)
+	    (*kuma-response* (make-instance 'http-response)))
+	(if handler
+	    (setf (rest (http-response-status-line *kuma-response*)) +http-ok+
+		  handler-func (lambda () (funcall (response-handler-function handler)
+						   +http-ok+)))
+	    (setf (rest (http-response-status-line *kuma-response*)) +http-not-found+
+		  handler-func (lambda () (funcall (response-handler-function error-handler)
+						   +http-not-found+))))            
+	(let ((worker-lock (connection-worker-lock connection))
+	      (callable (make-instance 'worker-callable
+				       :fd fd
+				       :server server
+				       :listener listener
+				       :handler-func handler-func
+				       :response *kuma-response*
+				       :request request
+				       :connection connection)))
+	  (bt:with-lock-held (worker-lock)
+	    (add-to-pool server-pool callable)))))))
 
 
 (defmethod make-kuma-listener-disconnector ((listener kuma-listener) socket)
@@ -497,9 +485,15 @@ p.h2 {font-size: 1.5em;}</style>
 
    (running-p :accessor kuma-server-running-p :initform nil)
    (handlers :accessor kuma-server-handlers :initarg :handlers)
+   (error-handler :accessor kuma-server-error-handler :initarg :error-handler)
    (http-port :reader kuma-server-http-port :initarg :http-port)
    (http-bind-address :reader kuma-server-bind-address :initarg :bind-address))
-  (:default-initargs :name "Kuma" :handlers nil :thread-queue 10 :http-port 6080 :bind-address +ipv4-unspecified+))
+  (:default-initargs :name "Kuma"
+    :handlers nil
+    :thread-queue 10
+    :http-port 6080
+    :bind-address +ipv4-unspecified+
+    :error-handler (make-instance 'response-error-handler)))
 
 (defmethod initialize-instance :after ((server kuma-server) &rest initargs)
   (declare (ignore initargs))
@@ -508,7 +502,7 @@ p.h2 {font-size: 1.5em;}</style>
 		   (http-port kuma-server-http-port)
 		   (bind-address kuma-server-bind-address))
       server
-    (setf threads (thread-pool:make-thread-pool queue-length))
+    (setf threads (make-thread-pool queue-length))
     (when (not (slot-boundp server 'listeners))
       (setf (slot-value server 'listeners)
 	    (list (make-instance 'kuma-listener :port http-port :bind-address bind-address :server server))))))
@@ -523,33 +517,11 @@ p.h2 {font-size: 1.5em;}</style>
 		     (threads kuma-server-threads))
 	*kuma-server*
       (setf running-p t)
-      (thread-pool:start-pool threads)
+      (start-pool threads)
       (loop for listener in listeners
 	   collect (bt:make-thread (lambda () (kuma-listener-run listener)))))))
 
 
 
-#|--------------------------------------------------|#
 
-#|
-(defmethod do-connection-output ((server kuma-server) (connection connection))
-  (let* ((request (connection-request connection))
-         (response (connection-response connection))
-         (keep-alive-p (string-equal (get-request-param "connection" request) "keep-alive"))
-         (client-http-version (http-request-http-version request))
-         (response-status-code (second (http-response-status-line response))))
-    (seft (connection-write-buffer connection)
-          (make-concatenated-stream
-           (babel:string-to-octets (format nil "~a~a~a" (status-line response) #\Return #\Newline)
-                                   :encoding :ascii)))))
-|#
 
-(defun print-removeme (&optional remove)
-  (let ((out (babel::octets-to-string (coerce *removeme* '(vector (unsigned-byte 8))) :encoding :utf-8)))
-    (when remove (setf *removeme* nil))
-    out))
-
-(defun print-removeme2 (&optional remove)
-  (let ((out (babel::octets-to-string (coerce *removeme2* '(vector (unsigned-byte 8))) :encoding :utf-8)))
-    (when remove (setf *removeme2* nil))
-    out))

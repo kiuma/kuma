@@ -276,7 +276,7 @@
   (header-slot-value header 'request-uri))
 
 (defmethod header-http-version ((header request-header))
-  (header-slot-value header 'http-versino))
+  (header-slot-value header 'http-version))
 
 (defclass response-header (general-header entity-header)
   ((accept-ranges :accessor header-accept-ranges :initform nil)
@@ -318,13 +318,13 @@
     (setf params (append params (list param value)))))
 
 (defmethod http-request-method ((request http-request))
-  (getf (http-request-request-line request) :method))
+  (header-method (http-request-header request)))
 
 (defmethod http-request-uri ((request http-request))
-  (getf (http-request-request-line request) :request-uri))
+  (header-request-uri (http-request-header request)))
 
 (defmethod http-request-http-version ((request http-request))
-  (getf (http-request-request-line request) :http-version))
+  (header-http-version (http-request-header request)))
 
 (defmethod  http-request-location ((request http-request))
   (first (cl-ppcre:split "\\?" (http-request-uri request))))
@@ -332,7 +332,7 @@
 (defmethod  http-request-query-string ((request http-request))
   (second (cl-ppcre:split "\\?" (http-request-uri request))))
 
-(defclass http-response ()
+(defclass http-response (closable)
   ((status-line :accessor http-response-status-line :initarg :status-line)
    (response-header :reader http-response-header :initform (make-instance 'response-header))
    (body-content :accessor http-response-body-content :initarg :body-content))
@@ -362,9 +362,9 @@
 								       :adjustable t))
    (read-buffer-pointer :accessor connection-read-buffer-pointer :initform 0)
    (write-buffer :accessor connection-write-buffer :initform nil)
-   (request :reader connection-request :initform (make-instance 'http-request))
+   (request :accessor connection-request :initform (make-instance 'http-request))
    (request-pipeline :accessor connection-request-pipeline :initform (make-instance 'arnesi:queue))
-   (response :accessor connection-response :initform nil)
+   (response-reader :accessor connection-response-reader :initform nil)
    (worker-lock :accessor connection-worker-lock :initform (bt:make-lock))))
 
 (defun create-easy-response-handler (&key uri function)
@@ -374,6 +374,7 @@
                               (http-request-location *kuma-request*)))
       function)))
 
+#|
 (defgeneric body-stream-handle-buffer (body-stream buffer))
 
 (defclass body-stream (trivial-gray-streams:trivial-gray-stream-mixin)
@@ -407,7 +408,9 @@
                                                             (babel:string-to-octets (make-http-line (format nil "~x" (length curr-buffer))) 
                                                                                     :encoding :ascii)
                                                             curr-buffer))))
+|#
 
+#|
 (defmethod stream-read-sequence ((body body-stream) sequence start end &key &allow-other-keys)
   (declare (ignore start end))
   
@@ -427,6 +430,7 @@
                                     (body-stream-handle-buffer body (subseq curr-buffer 0 buff-bytes-read)))))
                    (when buffer (setf bytes-read (read-sequence sequence buffer))))))
         bytes-read)))
+|#
 
 (defgeneric complete-response-header (response request))
 
@@ -434,7 +438,8 @@
 (defgeneric create-response-body-reader (reader))
 (defgeneric create-response-stream (reader))
 
-(defclass http-response-reader ()
+
+(defclass http-response-reader (closable)
   ((request :accessor http-response-reader-request :initarg :request)
    (response :accessor http-response-reader-response :initarg :response)
    (status-line-read-p :accessor status-line-read-p :initform nil)
@@ -468,9 +473,11 @@
       (when (and (pathnamep body) (fad:directory-pathname-p body))
 	(error 'http-forbidden-condition))
       (unless (get-response-param "Content-Type")
-        (when (and (pathnamep body) (fad:file-exists-p body) (not (fad:directory-pathname-p body)))
-          (let ((content-type (or (get-mime body) "application/octet-stream")))
-            (set-response-param "Content-Type" content-type))))
+        (cond 
+	  ((and (pathnamep body) (fad:file-exists-p body) (not (fad:directory-pathname-p body)))
+	   (let ((content-type (or (get-mime body) "application/octet-stream")))
+	     (set-response-param "Content-Type" content-type)))
+	  (t (set-response-param "Content-Type" "text/html"))))
 
       (unless (get-response-param "ETag")
         (when (and (pathnamep body) (fad:file-exists-p body) 
@@ -482,12 +489,19 @@
                    (not (fad:directory-pathname-p body)))
           (set-response-param "Last-Modified" 
                               (date:universal-time-to-http-date (file-write-date body)))))
-      
-      (when (and (pathnamep body) (not (get-response-param "Content-Length")))
-	(set-response-param "Content-Length" (format nil "~a" 
-						     (iolib.syscalls:stat-size 
-						      (iolib.syscalls:stat 
-						       (namestring body)))))))))
+
+      (unless (get-response-param "Content-Length")
+	(cond 
+	  ((pathnamep body) (set-response-param "Content-Length" 
+						(format nil "~a" 
+							(iolib.syscalls:stat-size 
+							 (iolib.syscalls:stat 
+							  (namestring body))))))
+	  ((streamp body) (set-response-param "Transfer-Encoding" "chunked"))
+	  ((stringp body) (let ((body-bytes (babel:string-to-octets body :encoding :utf-8)))
+			    (setf (http-response-body-content response)
+				  (flexi-streams:make-in-memory-input-stream body-bytes))
+			    (set-response-param  "Content-Length" (format nil "~d" (length  body-bytes))))))))))
 
 (defmethod initialize-instance :after ((reader http-response-reader) &rest initargs)
   (declare (ignore initargs))
@@ -504,9 +518,9 @@
 	    header-stream (create-response-header-stream reader)
 	    body-stream (typecase body
 			  (string (flexi-streams:make-in-memory-input-stream
-				   (babel:string-to-octets body :encoding :utf8)))
+				   (babel:string-to-octets body :encoding :utf-8)))
 			  (pathname (open body :element-type '(unsigned-byte 8)))
-			  (t body))))))
+			  (t (make-instance 'chunked-stream :stream body)))))))
 
 (defmethod create-response-stream ((reader http-response-reader))
   (with-accessors ((status-line-stream status-line-stream)
@@ -518,12 +532,21 @@
 				   header-stream
 				   body-stream)))))
 
-(defmethod close ((reader http-response-reader) &key abort)
-  (declare (ignore abort))
+(defmethod closable-close ((reader http-response-reader))
   (with-accessors ((status-line-stream status-line-stream)
                    (header-stream header-stream)
-                   (body-stream body-stream))
+                   (body-stream body-stream)
+		   (request http-response-reader-request)
+		   (response http-response-reader-response))
       reader
+    (format t "~%xxxxxxxxxxxxxxxxxxxxxxxxxxx~%~s~%" (http-request-post-parameters request))
+    (loop for (k v) on (http-request-post-parameters request) by #'cddr
+       when (listp v) 
+       do (alexandria:when-let ((pathname (getf v :pathname)))
+	    (when (and (pathnamep pathname) (probe-file pathname))
+	      (delete-file pathname))))
+    (when request (closable-close request))
+    (when response (closable-close response))
     (when status-line-stream (close status-line-stream))
     (when header-stream (close header-stream))
     (when body-stream (close body-stream))))
@@ -658,7 +681,6 @@ When compression is requested, checks the availability in cache, when the resour
   (content-transfer-encoding (header form-data)))
 
 (defmethod parse-form-data-value ((form-data form-data) value-octets)
-  (format t "~%form data charset ~a ~%" (string-upcase (content-type-charset form-data)))
   (if (string-equal "text/plain" (content-type-type form-data))
       (let* ((transfer-encoding (content-transfer-encoding form-data))
 	     (charset (string-upcase (content-type-charset form-data)))
@@ -699,8 +721,7 @@ When compression is requested, checks the availability in cache, when the resour
 							:displaced-to buffer) t)))
 	   (loop for (k v) on parsed-headers by #'cddr
 	      do (setf-header-value header k v))
-	   (setf pointer 0)
-	   (format t "~%FORM-DATA header ~a~%" parsed-headers)))
+	   (setf pointer 0)))
 	((and header
 	      (alexandria:starts-with-subseq "multipart" (content-type-type form-data)))
 	 (with-accessors ((form-data-worker form-data-worker))
@@ -742,7 +763,7 @@ When compression is requested, checks the availability in cache, when the resour
 									   0
 									   (- (read-pointer form-data) 2)))))
        (add-post-parameter request
-			   (intern (string-upcase (content-disposition-name form-data)) :keyword)
+			   (content-disposition-name form-data)
 			   value)))
     ;;; add multipart
     ((content-disposition-filename form-data)
@@ -750,7 +771,7 @@ When compression is requested, checks the availability in cache, when the resour
        (alexandria:when-let ((fcontent (fcontent form-data)))
 	 (close fcontent)
 	 (add-post-parameter request
-			     (intern (string-upcase (content-disposition-name form-data)) :keyword)
+			     (content-disposition-name form-data)
 			     (alexandria:when-let ((pathname (fcontent-pathname form-data)))
 			       (list :filename (content-disposition-filename form-data)
 				     :pathname pathname))))))))
@@ -844,3 +865,57 @@ if it is the last boundary"))
 	 (alexandria:when-let ((form-data (form-data worker)))
 	   (form-data-read-byte form-data out-byte))
 	 t)))))
+
+;; ------------------------ Response worker ------------------------- ;;
+
+(defgeneric response-handler-condition (response-handler))
+(defgeneric response-handler-function (response-handler))
+
+(defclass response-handler () 
+  ())
+
+(defmethod response-handler-condition ((handler response-handler))
+  nil)
+
+(defmethod response-handler-function ((handler response-handler))
+  (lambda (&optional (http-status)) 
+    (declare (ignore http-status))
+    nil))
+
+
+;; --------   default errors handler--------------
+(defclass response-error-handler (response-handler) 
+  ((template :reader handler-template :initarg :template))
+  (:default-initargs :template (arnesi:read-string-from-file 
+				(make-pathname :directory (append *kuma-src-dir* (list "resources")) 
+					       :name "http-error-tpl" 
+					       :type "html")
+				:external-format :utf-8)))
+
+(defmethod response-handler-condition ((handler response-error-handler))
+  t)
+
+(defmethod response-handler-function ((handler response-error-handler))
+  (lambda (&optional (http-status +http-internal-server-error+))
+    (let ((result ""))
+      (with-accessors ((connection-response-reader connection-response-reader))
+	  *kuma-connection*
+	(when connection-response-reader 
+	  (close connection-response-reader)
+	  (setf connection-response-reader nil))
+	(setf *kuma-response* (make-instance 'http-response 
+					     :status-line (cons "HTTP/1.1" http-status)))
+	(let* ((error-code (first http-status))
+	       (reason (second http-status))
+	       (request-uri (http-request-uri *kuma-request*))
+	       (server-name (kuma-server-name *kuma-server*))
+	       (template (handler-template handler)))
+	  (setf result (format nil
+			       template
+			       error-code
+			       error-code
+			       reason
+			       request-uri
+			       server-name))))
+      result
+      (flexi-streams:make-in-memory-input-stream (babel:string-to-octets result :encoding :utf-8)))))

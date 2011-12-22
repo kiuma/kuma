@@ -30,9 +30,15 @@
 
 (in-package :kuma)
 
-(defvar *kuma-request*)
-(defvar *kuma-response*)
-(defvar *kuma-server*)
-(defvar *kuma-connection*)
-(defvar *default-buffer-size* 65536)
+(defvar *kuma-request* nil)
+(defvar *kuma-response* nil)
+(defvar *kuma-server* nil)
+(defvar *kuma-connection* nil)
+(defvar *default-buffer-size* #|32768|# 64)
+(defvar *chunk-size* 32768)
 (defvar *default-content-type* "text/html")
+
+(defvar *kuma-src-dir* (load-time-value
+			(pathname-directory 
+			 (or #.*compile-file-pathname* *load-pathname*))))
+

@@ -53,9 +53,9 @@
                                      (:file "global-variables" :depends-on ("package"))
                                      (:file "mime-types" :depends-on ("package"))
                                      (:file "utils" :depends-on ("constants" "global-variables" "mime-types" "conditions"))
-                                     
+                                     (:file "streams" :depends-on ("utils"))
                                      (:file "parsers" :depends-on ("utils"))
-				     (:file "vo" :depends-on ("utils" "parsers"))
+				     (:file "vo" :depends-on ("utils" "parsers" "streams"))
 				     (:file "bodyworkers" :depends-on ("parsers"))
                                      (:file "kuma" :depends-on ("parsers" "bodyworkers"))))))
 

@@ -46,7 +46,6 @@
     (list "method" (first val) "request-uri" (second val) "http-version" (third val))))
 
 (defun %parse-headers (buffer &optional (form-data-p nil))
-  (format t "Parsing headers")
   (let ((headers nil)
 	(header-lines (cl-ppcre:split "\\r\\n"
 				      (babel:octets-to-string 
@@ -106,7 +105,9 @@
 
 (defun parse-rfc1738 (string)
   (loop for key-value in (cl-ppcre:split "&" string)
-       collect (parse-rfc1738-key-value key-value)))
+       for parsed-key-value = (parse-rfc1738-key-value key-value)
+       collect (first parsed-key-value)
+       collect (second parsed-key-value)))
 
 
 (defun make-x-www-form-urlencoded-hash-table (k-v-list)

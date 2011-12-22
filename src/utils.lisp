@@ -30,6 +30,9 @@
 
 (in-package :kuma)
 
+(defgeneric read-sequence (seq stream &key start end) (:method (seq stream &key (start 0) end) 
+							(funcall 'cl:read-sequence seq stream :start start :end end)))
+
 (defvar *tmp-path* (make-pathname :directory '(:absolute "tmp")))
 
 (defparameter +crlf+ (babel:string-to-octets
@@ -49,10 +52,10 @@
   (let ((namestring (or (and (pathnamep file) (namestring file)) file)))
     (when (and (fad:file-exists-p file) (not (fad:directory-exists-p file)))
       (with-accessors ((inode iolib.syscalls:stat-ino)
-                            (size iolib.syscalls:stat-size)
-                            (mtime iolib.syscalls:stat-mtime))
+		       (size iolib.syscalls:stat-size)
+		       (mtime iolib.syscalls:stat-mtime))
           (iolib.syscalls:stat namestring)
-        (format t "~x-~x-~x" inode size (+ +unix-time-delta+ mtime))))))
+        (format nil "~x-~x-~x" inode size (+ +unix-time-delta+ mtime))))))
 
 (defun get-mime (pathname)
   (or (gethash (pathname-type pathname) *mime-types*)
@@ -60,8 +63,9 @@
 
 (defun squeezable-p (mime-type)
   (loop for regex in *squeezable-mime-types*
-       for squeezable-p = nil
-       until squeezable-p
-       do (setf squeezable-p (cl-ppcre:scan (cl-ppcre:create-scanner regex :case-insensitive-mode t)
-                                            mime-type))
-       return squeezable-p))
+     for squeezable-p = nil
+     until squeezable-p
+     do (setf squeezable-p (cl-ppcre:scan 
+			    (cl-ppcre:create-scanner regex :case-insensitive-mode t)
+			    mime-type))
+     return squeezable-p))

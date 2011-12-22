@@ -32,5 +32,8 @@
 (in-package :cl-user)
 
 (defpackage :kuma
-  (:use #:cl #:iolib #:babel #:cl-ppcre #:split-sequence #:trivial-gray-streams))
+  (:use #:cl #:iolib #:babel #:cl-ppcre #:split-sequence #:trivial-gray-streams #:thread-pool)
+  (:shadow #:read-sequence)
+  (:export #:kuma-server
+	   #:kuma-server-run))
 
