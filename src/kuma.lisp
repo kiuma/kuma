@@ -155,12 +155,10 @@
    (fd :accessor callable-fd :initarg :fd)))
 
 (defmethod callable-call ((callable worker-callable))
-  (declare (ignore rest))
   (let* ((*kuma-connection* (callable-connection callable))
 	 (*kuma-request* (callable-request callable))
 	 (*kuma-response* (callable-response callable))
 	 (*kuma-server* (callable-server callable))
-	 (error-handler (kuma-server-error-handler *kuma-server*))
 	 (worker-lock (connection-worker-lock *kuma-connection*)))
     (progn
       (handler-case
@@ -372,7 +370,7 @@
 			      :buffer read-buf
 			      :start 0
 			      :end *max-bytes*)
-	      ;;(declare (ignore buf))
+	      (declare (ignore buf))
 
 	      ;; Unlike read-ing from a stream, receive-from
 	      ;; returns zero on an end-of-file read, so we turn
