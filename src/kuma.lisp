@@ -82,7 +82,7 @@
 		      (alexandria:when-let
 			  ((b (boundary (header-content-type
 					 (http-request-header request)))))
-			(babel:string-to-octets b :encoding :ascii))
+			(babel:string-to-octets b :encoding :utf-8))
 		      (connection-read-buffer-pointer connection) 0)
 		(alexandria:when-let ((expect (header-expect request-header)))
 		  (if (string-equal expect "100-continue")
@@ -90,7 +90,7 @@
 			     (babel:string-to-octets (make-http-line
 						      (make-http-line
 						       (format nil "HTTP/1.1 ~{~a~^ ~}" +http-continue+)))
-						     :encoding :ascii)))
+						     :encoding :utf-8)))
 			(send-to socket
 				 continue
 				 :end (length continue))

@@ -52,5 +52,5 @@
 							   (make-array size 
 								       :element-type '(unsigned-byte 8)
 								       :displaced-to (connection-read-buffer connection))
-							   :encoding :ascii))))
+							   :encoding :utf-8))))
 	    t)))))

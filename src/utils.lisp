@@ -37,11 +37,11 @@
 
 (defparameter +crlf+ (babel:string-to-octets
 		      (format nil "~a~a" #\Return #\Linefeed)
-		      :encoding :ascii))
+		      :encoding :utf-8))
 
 (defparameter +http-header-separator+ (babel:string-to-octets
                                        (format nil "~a~a~a~a" #\Return #\Linefeed #\Return #\Linefeed)
-                                       :encoding :ascii))
+                                       :encoding :utf-8))
 
 (defparameter +tab-string+ (format nil "~a" #\Tab))
 

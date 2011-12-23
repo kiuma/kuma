@@ -50,7 +50,7 @@
 	(header-lines (cl-ppcre:split "\\r\\n"
 				      (babel:octets-to-string 
 				       buffer
-				       :encoding :ascii))))
+				       :encoding :utf-8))))
     (unless form-data-p
       (setf headers (%parse-http-message (first header-lines))))
     (loop for line in (or (and form-data-p header-lines) 
@@ -87,17 +87,29 @@
                                       1))))
                (lambda (a b) (> (second a) (second b)))))))
 
+
 (defun parse-rfc1738-value (item)
-  (let ((regex-list (list "(%)([0-9,a-f,A-F]{2})" "(&#)([\\d]*)(;)")))
-    (second (mapcar #'(lambda (regex) 
-			(cl-ppcre:regex-replace-all regex item
-						    (lambda (target-string start end match-start match-end reg-starts reg-ends)
-						      (declare (ignore start end match-start match-end)) 
-						      (string (code-char (parse-integer 
-									  (subseq target-string 
-										  (aref reg-starts 1) 
-										  (aref reg-ends 1))))))))
-		    regex-list))))
+  (cl-ppcre:regex-replace-all "(%[0-9,a-f,A-F]{2})+" 
+			      (cl-ppcre:regex-replace-all "(&#[\\d]+;)+" item
+							  (lambda (target-string start end match-start match-end reg-starts reg-ends)
+							    (declare (ignore start end reg-starts reg-ends)) 
+							    (string (code-char (parse-integer 
+										(cl-ppcre:regex-replace-all "[^0-9]"
+													    (subseq target-string 
+														    match-start
+														    match-end) 
+													    ""))))))
+			      (lambda (target-string start end match-start match-end reg-starts reg-ends)
+				(declare (ignore start end reg-starts reg-ends)) 
+				(babel:octets-to-string (coerce (flet ((parse-hex (token) (parse-integer (subseq token 1) :radix 16)))
+								  (mapcar #'parse-hex 
+									  (cl-ppcre:all-matches-as-strings 
+									   "%[0-9a-fA-F]{2}"
+									   (subseq target-string 
+										   match-start 
+										   match-end))))					 
+								'(vector (unsigned-byte 8)))
+							:encoding :utf-8))))
 
 (defun parse-rfc1738-key-value (key-value)
   (loop for item in (cl-ppcre:split "=" key-value)
