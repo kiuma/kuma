@@ -34,7 +34,7 @@
 (in-package :kuma)
 
 ;;; setup a multiplexer
-
+(defvar *removeme*)
 (defvar *max-bytes* (* 1024 64))
 (defconstant +read-timeout+ 10)
 (defconstant +write-timeout+ 10)
@@ -371,13 +371,14 @@
 			      :start 0
 			      :end *max-bytes*)
 	      (declare (ignore buf))
-
+	      
 	      ;; Unlike read-ing from a stream, receive-from
 	      ;; returns zero on an end-of-file read, so we turn
 	      ;; around and signal that condition so our
 	      ;; handler-case can deal with it properly like our
 	      ;; other examples.
 	      (unless (zerop bytes-read)
+		;(setf *removeme* (babel:octets-to-string (subseq read-buf 0 bytes-read) :encoding :utf-8))
 		(dotimes (i bytes-read)
 		  (incf (connection-read-buffer-pointer connection))
 		  (when (> (connection-read-buffer-pointer connection)
@@ -390,17 +391,20 @@
                   (let ((current-buffer (connection-read-buffer connection))
 			(current-buffer-length (connection-read-buffer-pointer connection)))
 
-		    (unless (loop for worker in (kuma-listener-reader-workers listener)
-			       when (funcall worker connection current-buffer current-buffer-length)
-			       return t)
-		      (format t "~%POST parameters: ~a~%" (http-request-post-parameters
-							   http-request))
-		      (format t "~%GET parameters: ~a~%" (http-request-get-parameters
-							  http-request))
+		    (let* ((worker-run (loop for worker in (kuma-listener-reader-workers listener)
+					 when (funcall worker connection current-buffer current-buffer-length)
+					 return t)))
+		      (when (or (not worker-run)
+				(and (header-headers (http-request-header http-request))
+				     (not (header-content-type (http-request-header http-request)))))
+			(format t "~%POST parameters: ~a~%" (http-request-post-parameters
+							     http-request))
+			(format t "~%GET parameters: ~a~%" (http-request-get-parameters
+							    http-request))
 
-		      (setf (connection-read-buffer-pointer connection) 0
-			    (connection-request connection) (make-instance 'http-request))
-		      (kuma-server-process-response listener connection http-request fd))))))
+			(setf (connection-read-buffer-pointer connection) 0
+			      (connection-request connection) (make-instance 'http-request))
+			(kuma-server-process-response listener connection http-request fd)))))))
 
 	  (socket-connection-reset-error ()
 	    ;; Handle the client sending a reset.
@@ -419,19 +423,27 @@
 		     (error-handler kuma-server-error-handler)
 		     (server-pool kuma-server-threads))
 	server
-      (let ((handler (loop for handler in handlers
-			for result = (funcall (response-handler-condition handler) handler)
-			when result
-			return handler))
-	    (handler-func nil)
-	    (*kuma-response* (make-instance 'http-response)))
+      (let* ((*kuma-request* request)
+	     (*kuma-connection* connection)
+	     (*kuma-server* (kuma-server listener))
+	     (handler nil)
+	     (handler-func nil)	     
+	     (*kuma-response* (make-instance 'http-response)))
+	(format t "beginning conditions~%")
+	(setf handler (loop for handler in handlers
+			 for result = (handler-case 
+					  (funcall (response-handler-condition handler))
+					(error (e)
+					  (print e)
+					  nil))
+			 when result
+			 return handler))
+	(format t "Handler is ~s ~%" handler)
 	(if handler
 	    (setf (rest (http-response-status-line *kuma-response*)) +http-ok+
-		  handler-func (lambda () (funcall (response-handler-function handler)
-						   +http-ok+)))
+		  handler-func (lambda () (funcall (response-handler-function handler))))
 	    (setf (rest (http-response-status-line *kuma-response*)) +http-not-found+
-		  handler-func (lambda () (funcall (response-handler-function error-handler)
-						   +http-not-found+))))            
+		  handler-func (lambda () (funcall (response-handler-function error-handler)))))            
 	(let ((worker-lock (connection-worker-lock connection))
 	      (callable (make-instance 'worker-callable
 				       :fd fd

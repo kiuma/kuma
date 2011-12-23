@@ -35,5 +35,12 @@
   (:use #:cl #:iolib #:babel #:cl-ppcre #:split-sequence #:trivial-gray-streams #:thread-pool)
   (:shadow #:read-sequence)
   (:export #:kuma-server
-	   #:kuma-server-run))
+	   #:kuma-server-run
+	   #:*kuma-request*
+	   #:*kuma-response*
+	   #:*kuma-server*
+	   #:*kuma-connection*
+	   #:response-handler
+	   #:response-handler-condition
+	   #:response-handler-function))
 

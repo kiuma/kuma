@@ -868,19 +868,13 @@ if it is the last boundary"))
 
 ;; ------------------------ Response worker ------------------------- ;;
 
-(defgeneric response-handler-condition (response-handler))
-(defgeneric response-handler-function (response-handler))
 
 (defclass response-handler () 
-  ())
-
-(defmethod response-handler-condition ((handler response-handler))
-  nil)
-
-(defmethod response-handler-function ((handler response-handler))
-  (lambda (&optional (http-status)) 
-    (declare (ignore http-status))
-    nil))
+  ((condition-lambda :accessor response-handler-condition :initarg :condition-lambda)
+   (handler-function :accessor response-handler-function :initarg :handler-function))
+  (:default-initargs 
+   :condition-lambda (lambda () nil)
+   :handler-function (lambda () nil)))
 
 
 ;; --------   default errors handler--------------
