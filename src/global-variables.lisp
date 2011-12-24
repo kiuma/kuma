@@ -36,6 +36,8 @@
 (defvar *kuma-connection* nil)
 (defvar *default-buffer-size* 8192)
 (defvar *chunk-size* 32768)
+(defvar *connection-idle-timeout* 3)
+
 (defvar *default-content-type* "text/html")
 
 (defvar *kuma-src-dir* (load-time-value

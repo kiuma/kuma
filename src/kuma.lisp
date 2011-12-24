@@ -62,6 +62,7 @@
 
 (defun make-request-header-worker ()
   (lambda (connection buffer buffer-length)
+    (format t "---- calling request-header-worker -----~%")
     (let* ((http-request (connection-request connection))
 	   (header (http-request-header http-request))
 	   (header-headers (header-headers header)))
@@ -106,6 +107,7 @@
 
 (defun make-request-urlencoded-body-worker ()
   (lambda (connection buffer buffer-length)
+    (format t "---- calling request-url-encoded-worker -----~%")
     (let* ((http-request (connection-request connection))
 	   (header (http-request-header http-request))
 	   (content-length (header-content-length header)))
@@ -127,6 +129,7 @@
 (defun make-request-multipart-body-worker ()
   (lambda (connection buffer buffer-length)
     (declare (ignore buffer-length))
+    (format t "---- calling request-multipart-body-worker -----~%")
     (let* ((http-request (connection-request connection))
 	   (boundary (http-request-body-boundary http-request))
 	   (worker (and boundary
@@ -160,6 +163,7 @@
 	 (*kuma-response* (callable-response callable))
 	 (*kuma-server* (callable-server callable))
 	 (worker-lock (connection-worker-lock *kuma-connection*)))
+    (format t "---- calling callable call XX -----~%")
     (progn
       (handler-case
 	  (let ((call-result (funcall (callable-handler-func callable))))
@@ -358,6 +362,7 @@
   (let ((read-buf (make-array *max-bytes* :element-type 'unsigned-byte)))
     (lambda (fd event exception)
       (declare (ignore event exception))
+      ;;(format t "---- calling make-kuma-listener-read-some-bytes -----~%")
       (let* ((*kuma-server* (kuma-server listener))
 	     (connection (gethash fd (kuma-open-connections listener)))
 	     (http-request (connection-request connection))
@@ -377,35 +382,38 @@
 	      ;; around and signal that condition so our
 	      ;; handler-case can deal with it properly like our
 	      ;; other examples.
-	      (unless (zerop bytes-read)
+	      (if (> bytes-read 0)
 		;(setf *removeme* (babel:octets-to-string (subseq read-buf 0 bytes-read) :encoding :utf-8))
-		(dotimes (i bytes-read)
-		  (incf (connection-read-buffer-pointer connection))
-		  (when (> (connection-read-buffer-pointer connection)
-			   (length (connection-read-buffer connection)))
-		    (adjust-array (connection-read-buffer connection)
-				  (* (length (connection-read-buffer connection)) 2)))
-		  (setf (aref (connection-read-buffer connection)
-			      (- (connection-read-buffer-pointer connection) 1))
-			(aref read-buf i))
-                  (let ((current-buffer (connection-read-buffer connection))
-			(current-buffer-length (connection-read-buffer-pointer connection)))
+		(progn
+		  (setf (connection-last-access connection) (get-universal-time))
+		  (dotimes (i bytes-read)
+		    (incf (connection-read-buffer-pointer connection))
+		    (when (> (connection-read-buffer-pointer connection)
+			     (length (connection-read-buffer connection)))
+		      (adjust-array (connection-read-buffer connection)
+				    (* (length (connection-read-buffer connection)) 2)))
+		    (setf (aref (connection-read-buffer connection)
+				(- (connection-read-buffer-pointer connection) 1))
+			  (aref read-buf i))
+		    (let ((current-buffer (connection-read-buffer connection))
+			  (current-buffer-length (connection-read-buffer-pointer connection)))
 
-		    (let* ((worker-run (loop for worker in (kuma-listener-reader-workers listener)
-					 when (funcall worker connection current-buffer current-buffer-length)
-					 return t)))
-		      (when (or (not worker-run)
-				(and (header-headers (http-request-header http-request))
-				     (not (header-content-type (http-request-header http-request)))))
-			(format t "~%POST parameters: ~a~%" (http-request-post-parameters
-							     http-request))
-			(format t "~%GET parameters: ~a~%" (http-request-get-parameters
-							    http-request))
+		      (let* ((worker-run (loop for worker in (kuma-listener-reader-workers listener)
+					    when (funcall worker connection current-buffer current-buffer-length)
+					    return t)))
+			(when (or (not worker-run)
+				  (and (header-headers (http-request-header http-request))
+				       (not (header-content-type (http-request-header http-request)))))
+			  (format t "~%POST parameters: ~a~%" (http-request-post-parameters
+							       http-request))
+			  (format t "~%GET parameters: ~a~%" (http-request-get-parameters
+							      http-request))
 
-			(setf (connection-read-buffer-pointer connection) 0
-			      (connection-request connection) (make-instance 'http-request))
-			(kuma-server-process-response listener connection http-request fd)))))))
-
+			  (setf (connection-read-buffer-pointer connection) 0
+				(connection-request connection) (make-instance 'http-request))
+			  (kuma-server-process-response listener connection http-request fd))))))		
+		(progn
+		  (funcall (make-kuma-listener-disconnector listener socket) who port :close))))
 	  (socket-connection-reset-error ()
 	    ;; Handle the client sending a reset.
 	    (let* ()
@@ -454,14 +462,17 @@
 				       :request request
 				       :connection connection)))
 	  (bt:with-lock-held (worker-lock)
-	    (add-to-pool server-pool callable)))))))
+	    (add-to-pool server-pool callable))
+	  
+	  ;(callable-call callable)
+	  )))))
 
 
 (defmethod make-kuma-listener-disconnector ((listener kuma-listener) socket)
   (lambda (who port &rest events)
     (let ((fd (socket-os-fd socket))
 	  (event-base (kuma-event-base listener)))
-      (format t "(make-kuma-listener-disconnector ~a ~a) => event-base: ~a fd: ~a~%" listener socket event-base fd)
+      (format t "(make-kuma-listener-disconnector ~a ~a ~a) => event-base: ~a fd: ~a~%" listener socket events event-base fd)
       (if (not (intersection '(:read :write :error) events))
           (remove-fd-handlers event-base fd :read t :write t :error t)
           (progn
@@ -492,7 +503,7 @@
    ;(working-threads :accessor kuma-server-working-threads :initform nil)
    ;(queue-threads-lock :accessor kuma-server-queue-threads-lock :initform (bt:make-lock))
    (listeners :reader kuma-server-listeners :initarg :listeners)
-
+   (idle-timeout :accessor kuma-server-idle-timeout :initarg :idle-timeout)
    (running-p :accessor kuma-server-running-p :initform nil)
    (handlers :accessor kuma-server-handlers :initarg :handlers)
    (error-handler :accessor kuma-server-error-handler :initarg :error-handler)
@@ -502,6 +513,7 @@
     :handlers nil
     :thread-queue 10
     :http-port 6080
+    :idle-timeout *connection-idle-timeout*
     :bind-address +ipv4-unspecified+
     :error-handler (make-instance 'response-error-handler)))
 

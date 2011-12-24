@@ -362,6 +362,7 @@
 								       :adjustable t))
    (read-buffer-pointer :accessor connection-read-buffer-pointer :initform 0)
    (write-buffer :accessor connection-write-buffer :initform nil)
+   (last-access :accessor connection-last-access :initform (get-universal-time))
    (request :accessor connection-request :initform (make-instance 'http-request))
    (request-pipeline :accessor connection-request-pipeline :initform (make-instance 'arnesi:queue))
    (response-reader :accessor connection-response-reader :initform nil)
