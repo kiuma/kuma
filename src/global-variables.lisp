@@ -34,7 +34,7 @@
 (defvar *kuma-response* nil)
 (defvar *kuma-server* nil)
 (defvar *kuma-connection* nil)
-(defvar *default-buffer-size* 8192)
+(defvar *default-buffer-size* #|8192|#10)
 (defvar *chunk-size* 32768)
 (defvar *connection-idle-timeout* 3)
 

@@ -39,7 +39,7 @@
 
 (defgeneric header-value (header key))
 
-(defgeneric setf-header-value (header key value))
+(defgeneric (setf header-value) (value header key))
 
 (defgeneric header-slot-value (header slot))
 
@@ -57,23 +57,22 @@
 		:displaced-index-offset 1)))
 
 (defclass header ()
-  ((headers :accessor header-headers :initarg :headers))
+  ((headers :accessor header-headers :initarg :headers)
+   (headers-buffer :accessor headers-buffer :initform nil))
   (:default-initargs :headers (make-hash-table :test #'equalp)))
 
 (defmethod header-value ((header header) key)
   (gethash (or (and (symbolp key) (symbol-name key)) key)
            (header-headers header)))
 
-(defmethod setf-header-value ((header header) key value)
+(defmethod (setf header-value) (value (header header) key)
   (if value
       (setf (gethash (or (and (symbolp key) (symbol-name key)) key)
                      (header-headers header))
             value)
       (remhash key (header-headers header))))
 
-
-
-(defun get-request-param (key &optional (request *kuma-request*))
+(defun request-param (key &optional (request *kuma-request*))
   (header-value request key))
 
 (defmethod header-multi-value ((header header) key)
@@ -203,9 +202,10 @@
    (referer :accessor header-referer)
    (te :accessor header-te)
    (user-agent :accessor header-user-agent)
-   (method :accessor header-method)
-   (request-uri :accessor header-request-uri)
-   (http-version :accessor header-http-version))
+   ;(method :accessor header-method)
+   ;(request-uri :accessor header-request-uri)
+   ;(http-version :accessor header-http-version)
+   )
   (:default-initargs :headers nil))
 
 (defmethod header-accept ((header request-header))
@@ -269,6 +269,7 @@
 (defmethod header-user-agent ((header request-header))
   (header-slot-value header 'user-agent))
 
+#|
 (defmethod header-method ((header request-header))
   (header-slot-value header 'method))
 
@@ -277,7 +278,7 @@
 
 (defmethod header-http-version ((header request-header))
   (header-slot-value header 'http-version))
-
+|#
 (defclass response-header (general-header entity-header)
   ((accept-ranges :accessor header-accept-ranges :initform nil)
    (age :accessor header-age :initform nil)
@@ -298,7 +299,7 @@
 (defgeneric add-get-parameter (request param value))
 
 (defclass http-request (closable)
-  ((requset-line :reader http-request-request-line :initform nil)
+  ((requset-line :accessor http-request-request-line :initform nil)
    (header :reader http-request-header :initform (make-instance 'request-header))
    (body-entity-read-p :reader http-request-body-entity-read-p :initform nil)
    (get-parameters :reader http-request-get-parameters :initform nil)
@@ -318,13 +319,13 @@
     (setf params (append params (list param value)))))
 
 (defmethod http-request-method ((request http-request))
-  (header-method (http-request-header request)))
+  (getf (http-request-request-line request) :method))
 
 (defmethod http-request-uri ((request http-request))
-  (header-request-uri (http-request-header request)))
+  (getf (http-request-request-line request) :request-uri))
 
 (defmethod http-request-http-version ((request http-request))
-  (header-http-version (http-request-header request)))
+  (getf (http-request-request-line request) :http-version))
 
 (defmethod  http-request-location ((request http-request))
   (first (cl-ppcre:split "\\?" (http-request-uri request))))
@@ -338,16 +339,16 @@
    (body-content :accessor http-response-body-content :initarg :body-content))
   (:default-initargs :body-content nil :status-line (cons "HTTP/1.1" +http-ok+)))
 
-(defun set-response-param (key value &optional (response *kuma-response*))
-  (setf-header-value (http-response-header response) key value))
+(defun (setf response-param) (value key &optional (response *kuma-response*))
+  (setf (header-value (http-response-header response) key) value))
 
-(defun get-response-param (key &optional (response *kuma-response*))
+(defun response-param (key &optional (response *kuma-response*))
   (header-value (http-response-header response) key))
 
 (defun (setf status-line) (code)
   (setf (http-response-status-line *kuma-response*) 
         (cons "HTTP/1.1" (or (and (listp code) code)
-                             (list code (getf +http-http-results+ code))))))
+                             (list code (getf +http-http-results+ code ""))))))
 
 (defun status-line (&optional (response *kuma-response*))
   (format nil "~{~a~^ ~}" (http-response-status-line response)))
@@ -357,6 +358,8 @@
   ((client :reader connection-client :initarg :client)
    (who :reader connection-who :initarg :who)
    (port :reader connection-port :initarg :port)
+   (io-handler-writer-p :accessor io-handler-writer-p :initform nil)
+   (io-handler-reader-p :accessor io-handler-reader-p :initform t)
    (read-buffer :accessor connection-read-buffer :initform (make-array 65536 
 								       :element-type '(unsigned-byte 8)
 								       :adjustable t))
@@ -366,14 +369,11 @@
    (request :accessor connection-request :initform (make-instance 'http-request))
    (request-pipeline :accessor connection-request-pipeline :initform (make-instance 'arnesi:queue))
    (response-reader :accessor connection-response-reader :initform nil)
-   (worker-lock :accessor connection-worker-lock :initform (bt:make-lock))))
+   (worker-pipeline :accessor connection-worker-pipeline :initform (make-instance 'arnesi:queue))   
+   (worker-lock :accessor connection-worker-lock :initform (bt:make-lock))
+   (callable :accessor connection-callable :initform nil)
+   (callable-lock :accessor connection-callable-lock :initform (bt:make-lock))))
 
-(defun create-easy-response-handler (&key uri function)
-  (lambda ()
-    (when (and uri
-               (cl-ppcre:scan (cl-ppcre:create-scanner uri :case-insensitive-mode t)
-                              (http-request-location *kuma-request*)))
-      function)))
 
 #|
 (defgeneric body-stream-handle-buffer (body-stream buffer))
@@ -460,8 +460,8 @@
                                    collect (make-http-line (format nil "~a: ~a" k v)))))
              (when header-strings
                (flexi-streams:make-in-memory-input-stream
-                (babel:string-to-octets (make-http-line (format nil "~{~a~}"
-                                                                header-strings)))))))))
+                (babel:string-to-octets (format nil "~{~a~}~c~c"
+						header-strings #\Return #\Linefeed))))))))
 
 (defmethod complete-response-header ((response http-response) (request http-request))
   (let ((*kuma-request* request)
@@ -473,36 +473,37 @@
 	(error 'http-not-found-condition))
       (when (and (pathnamep body) (fad:directory-pathname-p body))
 	(error 'http-forbidden-condition))
-      (unless (get-response-param "Content-Type")
+      (unless (response-param "Content-Type")
         (cond 
 	  ((and (pathnamep body) (fad:file-exists-p body) (not (fad:directory-pathname-p body)))
 	   (let ((content-type (or (get-mime body) "application/octet-stream")))
-	     (set-response-param "Content-Type" content-type)))
-	  (t (set-response-param "Content-Type" "text/html"))))
+	     (setf (response-param "Content-Type") content-type)))
+	  (t (setf (response-param "Content-Type") "text/html"))))
 
-      (unless (get-response-param "ETag")
+      (unless (response-param "ETag")
         (when (and (pathnamep body) (fad:file-exists-p body) 
                    (not (fad:directory-pathname-p body)) client-http11-p)
-          (set-response-param "ETag" (etag-file body))))
+          (setf (response-param "ETag") (etag-file body))))
 
-      (unless (get-response-param "Last-Modified")
+      (unless (response-param "Last-Modified")
         (when (and (pathnamep body) (fad:file-exists-p body) 
                    (not (fad:directory-pathname-p body)))
-          (set-response-param "Last-Modified" 
+          (setf (response-param "Last-Modified") 
                               (date:universal-time-to-http-date (file-write-date body)))))
 
-      (unless (get-response-param "Content-Length")
+      (unless (response-param "Content-Length")
 	(cond 
-	  ((pathnamep body) (set-response-param "Content-Length" 
-						(format nil "~a" 
-							(iolib.syscalls:stat-size 
-							 (iolib.syscalls:stat 
-							  (namestring body))))))
-	  ((streamp body) (set-response-param "Transfer-Encoding" "chunked"))
+	  ((pathnamep body) (setf (response-param "Content-Length") 
+				  (format nil "~a" 
+					  (iolib.syscalls:stat-size 
+					   (iolib.syscalls:stat 
+					    (namestring body))))))
+	  ((streamp body) (setf (response-param "Transfer-Encoding") "chunked"))
 	  ((stringp body) (let ((body-bytes (babel:string-to-octets body :encoding :utf-8)))
 			    (setf (http-response-body-content response)
-				  (flexi-streams:make-in-memory-input-stream body-bytes))
-			    (set-response-param  "Content-Length" (format nil "~d" (length  body-bytes))))))))))
+				  (flexi-streams:make-in-memory-input-stream body-bytes)
+				  (response-param  "Content-Length") 
+				  (format nil "~d" (length  body-bytes))))))))))
 
 (defmethod initialize-instance :after ((reader http-response-reader) &rest initargs)
   (declare (ignore initargs))
@@ -520,8 +521,9 @@
 	    body-stream (typecase body
 			  (string (flexi-streams:make-in-memory-input-stream
 				   (babel:string-to-octets body :encoding :utf-8)))
-			  (pathname (open body :element-type '(unsigned-byte 8)))
-			  (t (make-instance 'chunked-stream :stream body)))))))
+			  (pathname (open body :element-type '(unsigned-byte 8))) ;;todo: use iolib
+			  (stream (make-instance 'chunked-stream :stream body))
+			  (t (flexi-streams:make-in-memory-input-stream +crlf+)))))))
 
 (defmethod create-response-stream ((reader http-response-reader))
   (with-accessors ((status-line-stream status-line-stream)
@@ -540,7 +542,6 @@
 		   (request http-response-reader-request)
 		   (response http-response-reader-response))
       reader
-    (format t "~%xxxxxxxxxxxxxxxxxxxxxxxxxxx~%~s~%" (http-request-post-parameters request))
     (loop for (k v) on (http-request-post-parameters request) by #'cddr
        when (listp v) 
        do (alexandria:when-let ((pathname (getf v :pathname)))
@@ -719,9 +720,9 @@ When compression is requested, checks the availability in cache, when the resour
 	 (setf header (make-instance 'form-data-header))
 	 (let ((parsed-headers (%parse-headers (make-array pointer
 							:element-type '(unsigned-byte 8)
-							:displaced-to buffer) t)))
+							:displaced-to buffer))))
 	   (loop for (k v) on parsed-headers by #'cddr
-	      do (setf-header-value header k v))
+	      do (setf (header-value header k) v))
 	   (setf pointer 0)))
 	((and header
 	      (alexandria:starts-with-subseq "multipart" (content-type-type form-data)))
@@ -891,17 +892,16 @@ if it is the last boundary"))
   t)
 
 (defmethod response-handler-function ((handler response-error-handler))
-  (lambda (&optional (http-status +http-internal-server-error+))
-    (let ((result ""))
+  (lambda ()
+    (let ((result "")
+	  (status (rest (http-response-status-line *kuma-response*))))
       (with-accessors ((connection-response-reader connection-response-reader))
 	  *kuma-connection*
 	(when connection-response-reader 
 	  (close connection-response-reader)
 	  (setf connection-response-reader nil))
-	(setf *kuma-response* (make-instance 'http-response 
-					     :status-line (cons "HTTP/1.1" http-status)))
-	(let* ((error-code (first http-status))
-	       (reason (second http-status))
+	(let* ((error-code (first status))
+	       (reason (second status))
 	       (request-uri (http-request-uri *kuma-request*))
 	       (server-name (kuma-server-name *kuma-server*))
 	       (template (handler-template handler)))

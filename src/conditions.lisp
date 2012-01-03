@@ -29,7 +29,7 @@
 
 (in-package :kuma)
 
-(define-condition http-condition ()
+(define-condition http-error ()
   ((code :reader error-code :initarg :code)
    (description :reader error-description :initarg :description)
    (reason :reader error-reason :initarg :reason))
@@ -45,98 +45,10 @@
 		       (or reason "")))))
   (:default-initargs :reason nil))
 
-(define-condition http-bad-request-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-bad-request+) :description (second +http-bad-request+)))
+(defun signal-http-error (error-code &optional reason)
+  (signal 'http-error :code (first error-code) :description (second error-code) :reason reason))
 
-(define-condition http-unauthorized-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-unauthorized+) :description (second +http-unauthorized+)))
-
-(define-condition http-payment-required-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-payment-required+) :description (second +http-payment-required+)))
-
-(define-condition http-forbidden-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-forbidden+) :description (second +http-forbidden+)))
-
-(define-condition http-not-found-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-not-found+) :description (second +http-not-found+)))
-
-(define-condition http-method-not-allowed-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-method-not-allowed+) :description (second +http-method-not-allowed+)))
-
-(define-condition http-not-acceptable-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-not-acceptable+) :description (second +http-not-acceptable+)))
-
-(define-condition http-proxy-authentication-required-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-proxy-authentication-required+) :description (second +http-proxy-authentication-required+)))
-
-(define-condition http-request-timeout-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-request-timeout+) :description (second +http-request-timeout+)))
-
-(define-condition http-conflict-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-conflict+) :description (second +http-conflict+)))
-
-(define-condition http-gone-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-gone+) :description (second +http-gone+))) 
-
-(define-condition http-lenght-required-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-lenght-required+) :description (second +http-lenght-required+))) 
-
-(define-condition http-precondition-failed-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-precondition-failed+) :description (second +http-precondition-failed+))) 
-
-(define-condition http-request-entity-too-large-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-request-entity-too-large+) :description (second +http-request-entity-too-large+))) 
-
-(define-condition http-request-uri-too-large-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-request-uri-too-large+) :description (second +http-request-uri-too-large+))) 
-
-(define-condition http-unsupported-media-type-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-unsupported-media-type+) :description (second +http-unsupported-media-type+))) 
-
-(define-condition http-request-range-not-satisfiable-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-request-range-not-satisfiable+) :description (second +http-request-range-not-satisfiable+))) 
-
-(define-condition http-expectation-failed-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-expectation-failed+) :description (second +http-expectation-failed+))) 
-
-(define-condition http-internal-server-error-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-internal-server-error+) :description (second +http-internal-server-error+))) 
-
-(define-condition http-not-implemented-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-not-implemented+) :description (second +http-not-implemented+))) 
-
-(define-condition http-bad-gateway-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-bad-gateway+) :description (second +http-bad-gateway+))) 
-
-(define-condition http-service-unavailable-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-service-unavailable+) :description (second +http-service-unavailable+))) 
-
-(define-condition http-gateway-timeout-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-gateway-timeout+) :description (second +http-gateway-timeout+))) 
-
-(define-condition http-http-version-not-supported-condition (http-condition)
-  ()
-  (:default-initargs :code (first +http-http-version-not-supported+) :description (second +http-http-version-not-supported+))) 
+(defun signal-basic-auth-required (realm)
+  (let ((error-code +http-unauthorized+))
+    (setf (response-param "WWW-Authenticate") (format nil "Basic realm=\"~a\"" realm))
+    (signal 'http-error :code (first error-code) :description (second error-code))))

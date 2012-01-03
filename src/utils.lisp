@@ -46,7 +46,7 @@
 (defparameter +tab-string+ (format nil "~a" #\Tab))
 
 (defun make-http-line (string)
-  (format nil "~a~a~a" string #\Return #\Newline))
+  (format nil "~a~c~c" string #\Return #\Newline))
 
 (defun etag-file (file)
   (let ((namestring (or (and (pathnamep file) (namestring file)) file)))

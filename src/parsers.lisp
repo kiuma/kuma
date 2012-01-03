@@ -41,20 +41,19 @@
 (defun %parse-header-value (string)
   (trim-white-spaces string))
 
-(defun %parse-http-message (header-line)
-  (let ((val (cl-ppcre:split "\\s" header-line)))
-    (list "method" (first val) "request-uri" (second val) "http-version" (third val))))
+(defun %parse-http-request-line (buffer)
+  (let ((val (cl-ppcre:split "\\s+" (babel:octets-to-string 
+				     buffer
+				     :encoding :utf-8))))
+    (list :method (first val) :request-uri (second val) :http-version (third val))))
 
-(defun %parse-headers (buffer &optional (form-data-p nil))
+(defun %parse-headers (buffer)
   (let ((headers nil)
 	(header-lines (cl-ppcre:split "\\r\\n"
 				      (babel:octets-to-string 
 				       buffer
 				       :encoding :utf-8))))
-    (unless form-data-p
-      (setf headers (%parse-http-message (first header-lines))))
-    (loop for line in (or (and form-data-p header-lines) 
-			  (rest header-lines))
+    (loop for line in header-lines
        unless (zerop (length line))
        do (if (cl-ppcre:all-matches "^\\s" line)
               (when (not (null headers))
