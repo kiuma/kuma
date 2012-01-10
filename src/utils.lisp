@@ -57,6 +57,10 @@
           (iolib.syscalls:stat namestring)
         (format nil "~x-~x-~x" inode size (+ +unix-time-delta+ mtime))))))
 
+(defun file-size (file)
+  (let ((namestring (or (and (pathnamep file) (namestring file)) file)))
+    (iolib.syscalls:stat-size (iolib.syscalls:stat namestring))))
+
 (defun get-mime (pathname)
   (or (gethash (pathname-type pathname) *mime-types*)
       "application/octet-stream"))

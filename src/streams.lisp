@@ -127,3 +127,81 @@
 (defmethod close ((stream chunked-stream) &key abort)
   (close (chunked-stream-stream stream) :abort abort))
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defgeneric create-read-buffer (stream))
+
+(defclass range-stream (trivial-gray-streams:fundamental-binary-input-stream)
+  ((pathname :reader range-stream-pathname :initarg :pathname)
+   (file-size :reader range-stream-file-size)
+   (file-stream :reader range-stream-file-stream)
+   (read-buffer :accessor range-stream-read-buffer 
+		:initform (make-array *default-buffer-size* 
+				      :element-type '(unsigned-byte 8)))
+   (buffer-pointer :accessor buffer-pointer :initform 0)
+   (read-buffer-pointer :accessor read-buffer-pointer :initform 0)
+   (stream-read-p :accessor stream-read-p :initform nil)
+   (begin :reader range-stream-begin)
+   (end :reader range-stream-end)
+   (byte-range :reader range-stream-byte-range :initarg :byte-range)))
+
+(defmethod initialize-instance :after ((stream range-stream) &rest arguments)
+  (declare (ignore arguments))
+  (with-accessors ((pathname range-stream-pathname)
+		   (byte-range range-stream-byte-range))
+      stream
+    (let ((file-size (iolib.syscalls:stat-size
+		      (iolib.syscalls:stat (namestring pathname)))))
+      (if (< (first byte-range) 0)
+	  (setf (slot-value stream 'end) (- file-size 1)
+		(slot-value stream 'begin) (+ file-size (first byte-range)))
+	  (if (= 2 (length byte-range))
+	      (setf (slot-value stream 'end) (second byte-range)
+		    (slot-value stream 'begin) (first byte-range))
+	      (setf (slot-value stream 'end) (- file-size 1)
+		    (slot-value stream 'begin) (first byte-range))))
+      (if (or (< (range-stream-begin stream) 0)
+	      (>= (range-stream-end stream) file-size))
+	  (signal-http-error +http-request-range-not-satisfiable+)
+	  (setf (slot-value stream 'file-stream) (open pathname 
+						       :element-type '(unsigned-byte 8))
+		(slot-value stream 'file-size) file-size)))))
+
+(defmethod stream-element-type ((stream range-stream))
+  '(unsigned-byte 8))
+
+(defmethod close ((stream range-stream) &key abort)
+  (close (range-stream-file-stream stream) :abort abort))
+
+(defmethod create-read-buffer ((stream range-stream))
+  (with-accessors ((read-buffer-pointer read-buffer-pointer)
+		   (buffer-pointer buffer-pointer)
+		   (file-stream range-stream-file-stream)
+		   (begin range-stream-begin)
+		   (read-buffer range-stream-read-buffer))
+      stream
+    (setf read-buffer-pointer 0)
+    (when (= buffer-pointer 0)
+      (file-position file-stream (setf buffer-pointer begin)))
+    (read-sequence read-buffer file-stream)))
+
+(defmethod stream-read-byte ((stream range-stream))
+  (with-accessors ((buffer-pointer buffer-pointer)
+		   (read-buffer-pointer read-buffer-pointer)
+		   (stream-read-p stream-read-p)
+		   (read-buffer range-stream-read-buffer)
+		   (end range-stream-end))
+      stream
+    (if (> buffer-pointer end)
+	(progn
+	  :eof)
+	(progn
+	  (when (or (= buffer-pointer 0) 
+		    (= read-buffer-pointer (length read-buffer)))
+	    (create-read-buffer stream))
+	  (let ((byte nil))
+	    (setf byte (aref read-buffer read-buffer-pointer))
+	    (incf read-buffer-pointer)
+	    (incf buffer-pointer)
+	    byte)))))

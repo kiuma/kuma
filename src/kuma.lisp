@@ -97,6 +97,13 @@
 		     (request-header (http-request-header request)))
 		(setf (headers-buffer header) (subseq buffer 0 (- buffer-length 4))
 		      (header-headers header) (make-hash-table :test #'equalp))
+		#|
+		(setf *out* (babel:octets-to-string (make-array buffer-length
+								:element-type '(unsigned-byte 8)
+								:displaced-to buffer)
+						    :encoding :utf-8))
+		(break "debug")
+		|#
 		(loop for (k v) on (%parse-headers (make-array buffer-length
 							       :element-type '(unsigned-byte 8)
 							       :displaced-to buffer)) by #'cddr
@@ -366,13 +373,16 @@
 	      (setf write-buffer (create-response-stream response-reader))))
 	  (if (and response-reader write-buffer)
 	      (progn
-		(let ((bytes-read (read-sequence seq-buffer write-buffer)))	      
+		(let ((bytes-read (read-sequence seq-buffer write-buffer)))
+		  ;;(format t "~%^^^^^^^^^^ ~d ^^^^^^^^^^^^^^~%" bytes-read)
 		  (if (> bytes-read 0)
 		      (handler-case 
 			  (progn 
 			    (send-to socket
 				     seq-buffer
-				     :end bytes-read))
+				     :end bytes-read)
+			    ;;(format t "~%SEND TO OK~%")
+			    )
 			(socket-connection-reset-error ()
 			  ;; If for somer eaon the client reset the network connection,
 			  ;; we'll get this signal.

@@ -165,3 +165,23 @@
 					     (intern (string-upcase external-format) :keyword)
 					     external-format))
       (base64:base64-string-to-usb8-array string)))
+
+
+(defun %parse-range (string)
+  (let ((regex (cl-ppcre:create-scanner "^[\\s]*bytes=([\\d]*)(-)([\\d]*)[\\s]*$"
+					:case-insensitive-mode t)))
+    (when string
+      (multiple-value-bind (scan strings)
+	  (cl-ppcre:scan-to-strings regex string)
+	(declare (ignore scan))
+	(unless strings
+	  (signal-http-error +http-request-range-not-satisfiable+))
+	(if (string-equal (aref strings 0) "-")
+	    (list (* -1 (parse-integer (aref strings 1))))
+	    (if (and (= (length strings) 3) (string-not-equal "" (aref strings 2)))
+		(let ((from (parse-integer (aref strings 0)))
+		      (to (parse-integer (aref strings 2))))
+		  (if (< from to)
+		      (list from to)
+		      (signal-http-error +http-request-range-not-satisfiable+)))
+		(list (parse-integer (aref strings 0)))))))))

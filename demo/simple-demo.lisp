@@ -62,6 +62,13 @@
 				      :handler-function (lambda ()
 							  *demo-file*)))
 
+
+(defvar *idea-handler* (make-instance 'kuma:response-handler
+				      :condition-lambda (lambda ()
+							   (string-equal "/idea.html" (kuma::http-request-location kuma:*kuma-request*)))
+				      :handler-function (lambda ()
+							  #P"/home/kiuma/dld/java/idea/ideaIU-11.tar.gz")))
+
 (defvar *protected-handler* (make-instance 'kuma:response-handler
 				      :condition-lambda (lambda ()
 							   (string-equal "/protected.html" (kuma::http-request-location kuma:*kuma-request*)))
@@ -71,6 +78,7 @@
 (defvar *server* (make-instance 'kuma:kuma-server :handlers (list *home-hanlder* 
 								  *empty-handler* 
 								  *file-handler*
-								  *protected-handler*)))
+								  *protected-handler*
+								  *idea-handler*)))
 
 ;;(kuma:kuma-server-run *server*)
